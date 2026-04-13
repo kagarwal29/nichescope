@@ -13,6 +13,12 @@ nichescope/bot/commands/collabs.py
 nichescope/bot/commands/demands.py
 nichescope/bot/commands/formats.py
 nichescope/bot/commands/titlescore.py
+nichescope/services/__init__.py
+nichescope/services/collab_graph.py
+nichescope/services/comment_demand.py
+nichescope/services/format_intel.py
+nichescope/services/seasonal_calendar.py
+nichescope/services/title_predictor.py
 tests/test_collab_graph.py
 tests/test_comment_demand.py
 tests/test_format_intel.py
