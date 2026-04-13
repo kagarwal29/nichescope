@@ -1,0 +1,74 @@
+# NicheScope
+
+**Creator Intelligence Platform** — content gaps, competitor radar, and forward-looking insights for YouTube creators.
+
+> *"What should I create next, based on data?"* — answered with evidence, not AI opinions.
+
+## What It Does
+
+### Core
+- **Content Gap Detection** — `gap_score = (demand × recency) / (supply × (your_coverage + 1))`
+- **Competitor Radar** — tracks posting velocity, viral alerts, topic coverage
+- **Performance Anomalies** — viral (>3x baseline) and flop (<0.3x) alerts
+- **Daily Briefings** — Telegram push every morning
+
+### Forward-Looking (no competitor does these)
+- **Comment Demand Mining** — extracts viewer requests from competitor comments
+- **Seasonal Content Calendar** — predicts topic spikes, recommends publish windows
+- **Collaboration Graph** — finds optimal collab partners (high relevance, low overlap)
+- **Format Intelligence** — best format × duration combo per topic
+- **Title Performance Predictor** — pre-publish A/B scoring
+
+## Quick Start
+
+```zsh
+git clone https://github.com/kagarwal29/nichescope.git
+cd nichescope
+cp .env.example .env   # add your API keys
+docker compose up -d
+```
+
+Or locally:
+```zsh
+pip install -e ".[dev]"
+python scripts/seed_demo.py
+uvicorn nichescope.main:app --reload
+```
+
+## Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Onboarding |
+| `/brief` | Daily briefing |
+| `/gaps` | Top content gaps |
+| `/rival @handle` | Competitor deep-dive |
+| `/trending` | Trending topics |
+| `/demands` | Audience demand signals |
+| `/calendar` | Seasonal content calendar |
+| `/collabs` | Collab opportunities |
+| `/formats` | Format intelligence |
+| `/titlescore` | Pre-publish title scorer |
+
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/register` | Create account |
+| GET | `/api/gaps?niche_id=1` | Content gaps |
+| GET | `/api/insights/demands?niche_id=1` | Demand signals |
+| GET | `/api/insights/calendar?niche_id=1` | Content calendar |
+| GET | `/api/insights/collabs?niche_id=1` | Collab opportunities |
+| GET | `/api/insights/formats?niche_id=1` | Format intelligence |
+| POST | `/api/insights/title-score` | Title scoring |
+| GET | `/api/report/{channel_id}` | Public channel report |
+
+## Quota Strategy
+
+- RSS feeds: **0 units/day** (unlimited polling)
+- Video enrichment: **~1 unit per 50 videos**
+- Steady state: **~11 units/user/day** → 900 users on free quota
+
+## License
+
+MIT
