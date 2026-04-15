@@ -1,0 +1,12 @@
+{
+  "$schema": "https://railway.app/json-schema.json",
+  "build": {
+    "builder": "dockerfile",
+    "buildCommand": "docker build -t nichescope:latest ."
+  },
+  "deploy": {
+    "startCommand": "uvicorn nichescope.main:app --host 0.0.0.0 --port $PORT",
+    "restartPolicyCondition": "on-failure",
+    "restartPolicyMaxRetries": 5
+  }
+}

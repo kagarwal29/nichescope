@@ -1,1 +1,1 @@
-"""NicheScope forward-looking services."""
+"""Re-export services."""
