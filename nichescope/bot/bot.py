@@ -1,45 +1,77 @@
-"""Telegram bot setup and lifecycle.
+"""Telegram bot — competitor commands + conversational YouTube assistant.
 
-The general_message handler catches ALL non-command text — including from
-first-time users — so no /start is required.  Commands remain as power-user
-shortcuts but are never shown as required steps.
+Supports two transport modes (auto-selected by config):
+  - Webhook (TELEGRAM_WEBHOOK_URL set): Telegram POSTs updates to /webhook on
+    our FastAPI server.  Outbound connection to api.telegram.org only needed at
+    startup to register/deregister the webhook URL.
+  - Polling (fallback): bot opens a long-poll connection to api.telegram.org
+    (requires reliable outbound access — does NOT work on blocked networks).
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import time, timezone
 
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue, MessageHandler, filters
 
-from nichescope.bot.commands.analyze import analyze
-from nichescope.bot.commands.brief import brief
-from nichescope.bot.commands.calendar import calendar
-from nichescope.bot.commands.collabs import collabs
-from nichescope.bot.commands.demands import demands
-from nichescope.bot.commands.formats import formats
-from nichescope.bot.commands.gaps import gaps
-from nichescope.bot.commands.general_message import general_message
-from nichescope.bot.commands.rival import rival
-from nichescope.bot.commands.titlescore import titlescore
-from nichescope.bot.commands.trending import trending
+from nichescope.bot.handler import handle_message
+from nichescope.bot.watch_commands import (
+    cmd_digest,
+    cmd_unwatch,
+    cmd_watch,
+    cmd_watch_help,
+    cmd_watches,
+)
 from nichescope.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-async def _start_shortcut(update, context):
-    """Minimal /start — just a welcome, no multi-step onboarding."""
-    await update.message.reply_text(
-        "👋 *Welcome to NicheScope!*\n\n"
-        "Just tell me what kind of YouTube channel you're interested in, "
-        "and I'll analyze the landscape for you.\n\n"
-        "For example:\n"
-        "• _\"I want to start a mock interview channel\"_\n"
-        "• _\"What's not getting covered in home cooking?\"_\n"
-        "• _\"Analyze the personal finance niche\"_\n\n"
-        "_No setup needed — just type your question!_",
-        parse_mode="Markdown",
+def register_digest_scheduler(application) -> None:
+    """Daily UTC digest for every chat with at least one watched channel."""
+
+    async def daily_job(context):
+        from nichescope.services.digest import broadcast_daily_digests
+        from nichescope.services.youtube import YouTubeAPI
+
+        yt = YouTubeAPI()
+        await broadcast_daily_digests(context.bot, yt)
+
+    if not settings.digest_enabled:
+        logger.info("Digest scheduler off (DIGEST_ENABLED=false)")
+        return
+    jq = application.job_queue
+    if jq is None:
+        logger.warning("JobQueue unavailable — install python-telegram-bot[job-queue]")
+        return
+
+    jq.run_daily(
+        daily_job,
+        time=time(hour=settings.digest_hour_utc % 24, minute=0, tzinfo=timezone.utc),
+        name="nichescope_daily_digest",
     )
+    logger.info("Daily digest scheduled %02d:00 UTC", settings.digest_hour_utc % 24)
+
+
+def _corp_ssl_context():
+    """Build an SSL context that trusts the corporate CA bundle (Uber + Zscaler)."""
+    import os, ssl
+    # SSL_CERT_FILE env var is the most reliable override on corporate networks.
+    bundle = (
+        os.environ.get("SSL_CERT_FILE")
+        or (settings.ssl_ca_bundle or "").strip()
+    )
+    if not bundle or bundle.lower() == "false":
+        return None
+    from pathlib import Path
+    if not Path(bundle).is_file():
+        return None
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(bundle)
+    logger.info("Telegram bot TLS: loaded corporate CA bundle from %s", bundle)
+    return ctx
 
 
 def create_bot_app():
@@ -47,43 +79,105 @@ def create_bot_app():
         logger.warning("TELEGRAM_BOT_TOKEN not set — bot will not start")
         return None
 
-    app = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    builder = ApplicationBuilder().token(settings.telegram_bot_token).job_queue(JobQueue())
 
-    # /start — simple welcome message (no multi-step onboarding)
-    app.add_handler(CommandHandler("start", _start_shortcut))
+    ssl_ctx = _corp_ssl_context()
+    if ssl_ctx is not None:
+        from telegram.request import HTTPXRequest
+        builder = builder.request(HTTPXRequest(ssl=ssl_ctx))
 
-    # Power-user command shortcuts
-    app.add_handler(CommandHandler("brief", brief))
-    app.add_handler(CommandHandler("gaps", gaps))
-    app.add_handler(CommandHandler("rival", rival))
-    app.add_handler(CommandHandler("trending", trending))
-    app.add_handler(CommandHandler("demands", demands))
-    app.add_handler(CommandHandler("calendar", calendar))
-    app.add_handler(CommandHandler("collabs", collabs))
-    app.add_handler(CommandHandler("formats", formats))
-    app.add_handler(CommandHandler("titlescore", titlescore))
-    app.add_handler(CommandHandler("analyze", analyze))
+    app = builder.build()
 
-    # Conversational handler — catches ALL non-command text (including new users)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, general_message))
+    app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
+    app.add_handler(CommandHandler("watches", cmd_watches))
+    app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("radar", cmd_watch_help))
 
-    logger.info("Telegram bot handlers registered (10 commands + conversational handler)")
+    register_digest_scheduler(app)
+
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    logger.info("Telegram bot handlers registered")
     return app
 
 
-async def start_bot_polling():
+# ── Webhook mode ────────────────────────────────────────────────────────────
+
+async def start_webhook_mode() -> object | None:
+    """Register webhook with Telegram and start the Application (no updater/polling)."""
     app = create_bot_app()
-    if app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        logger.info("Telegram bot started (polling mode)")
-        return app
-    return None
+    if not app:
+        return None
+
+    await app.initialize()
+    await app.start()
+
+    url = settings.telegram_webhook_url.rstrip("/")
+    secret = settings.telegram_webhook_secret or None
+
+    await app.bot.set_webhook(
+        url=url,
+        secret_token=secret,
+        allowed_updates=["message", "callback_query", "inline_query"],
+        drop_pending_updates=True,
+    )
+    info = await app.bot.get_webhook_info()
+    logger.info(
+        "Webhook registered — url=%s pending=%s",
+        info.url,
+        info.pending_update_count,
+    )
+    return app
 
 
-async def stop_bot(app):
-    if app:
+async def process_webhook_update(app, data: dict) -> None:
+    """Feed a raw JSON dict from the webhook POST into the Application."""
+    update = Update.de_json(data, app.bot)
+    await app.process_update(update)
+
+
+async def stop_webhook_mode(app) -> None:
+    if not app:
+        return
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=False)
+        logger.info("Webhook deregistered")
+    except Exception as exc:
+        logger.warning("Could not deregister webhook: %s", exc)
+    await app.stop()
+    await app.shutdown()
+
+
+# ── Polling mode ─────────────────────────────────────────────────────────────
+
+async def start_bot_polling() -> object | None:
+    app = create_bot_app()
+    if not app:
+        return None
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    logger.info("Telegram bot started (polling mode)")
+    return app
+
+
+async def stop_polling_mode(app) -> None:
+    if not app:
+        return
+    try:
         await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    except Exception as exc:
+        logger.warning("Updater stop error: %s", exc)
+    await app.stop()
+    await app.shutdown()
+
+
+# ── Unified stop (works for both modes) ──────────────────────────────────────
+
+async def stop_bot(app) -> None:
+    if not app:
+        return
+    if settings.telegram_webhook_url:
+        await stop_webhook_mode(app)
+    else:
+        await stop_polling_mode(app)

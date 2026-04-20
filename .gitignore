@@ -1,16 +1,11 @@
-node_modules/
 __pycache__/
 *.pyc
 .env
-*.db
-*.sqlite
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
+*.egg-info/
 dist/
 build/
-*.egg-info/
-.venv/
-venv/
-.env
-feedback.json
+.mypy_cache/
+# Local SQLite (watchlist)
+data/
+# CA bundle regenerated from macOS keychain — never commit real certs
+# certs/  # keep commented so Docker build COPY works; just don't commit secrets

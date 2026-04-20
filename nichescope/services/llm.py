@@ -1,0 +1,326 @@
+"""Conversational YouTube assistant via GenAI + live YouTube Data API.
+
+Flow: plan (JSON) → fetch channel/video data → answer with grounded context.
+No regex-based routing; no slash-command logic here.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+import httpx
+
+from nichescope.config import settings
+from nichescope.services.youtube import YouTubeAPI
+
+logger = logging.getLogger(__name__)
+
+_http: httpx.AsyncClient | None = None
+
+_PLAN_SYSTEM = """You are NicheScope, a Telegram assistant focused on YouTube creators and videos.
+
+Read the user's message and output ONLY valid JSON (no markdown fences) with this exact shape:
+{
+  "reply_direct": boolean,
+  "direct_message": string | null,
+  "channels_to_lookup": string[],
+  "include_recent_videos": boolean,
+  "video_sample_size": number
+}
+
+Rules:
+- Plain text only inside direct_message when used (no markdown, no * or _).
+- If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message.
+- If the topic is clearly not about YouTube (creators, channels, videos, views, uploads, subscribers, etc.): reply_direct=true with a brief polite message that you only help with YouTube-related questions.
+- When the user needs stats, comparisons, recent uploads, top videos, schedules, or channel info: reply_direct=false and fill channels_to_lookup with 1–3 search strings (names or @handles) that work in YouTube search.
+- include_recent_videos=true when recent uploads, video titles, top/most-viewed lists, posting patterns, or "latest" matters; false for subscriber-only or generic stat questions where listing videos is unnecessary.
+- video_sample_size: integer 5–15 when include_recent_videos is true, else use 0.
+- If you cannot tell which channel they mean: reply_direct=true and direct_message asks them to name the channel or @handle clearly.
+"""
+
+_ANSWER_SYSTEM = """You are NicheScope. Answer in a natural, conversational way using ONLY the YouTube API data provided below.
+
+If a channel lookup failed or data is missing, say so honestly. Do not invent statistics or video titles.
+
+Plain text only — no markdown, asterisks, or underscores for formatting."""
+
+
+def _ssl_verify():
+    """Return the httpx `verify=` value: path string, False, or True (system CAs)."""
+    import os
+    # SSL_CERT_FILE is set in docker-compose and respected by Python's ssl module globally.
+    # Passing it explicitly to httpx ensures it's used even if the env var propagation is delayed.
+    bundle = (
+        os.environ.get("SSL_CERT_FILE")
+        or os.environ.get("REQUESTS_CA_BUNDLE")
+        or (settings.ssl_ca_bundle or "").strip()
+    )
+    if not bundle:
+        return True
+    if bundle.lower() == "false":
+        return False
+    from pathlib import Path
+    return str(bundle) if Path(bundle).is_file() else True
+
+
+def _get_http() -> httpx.AsyncClient | None:
+    global _http
+    if not settings.genai_token:
+        return None
+    if _http is None:
+        _http = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0),
+            verify=_ssl_verify(),
+            headers={
+                "Authorization": f"Bearer {settings.genai_token}",
+                "Content-Type": "application/json",
+            },
+        )
+    return _http
+
+
+async def close_genai_http_client() -> None:
+    global _http
+    if _http is not None:
+        await _http.aclose()
+        _http = None
+
+
+async def chat_completion(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int = 1024,
+    temperature: float = 0.4,
+) -> str | None:
+    http = _get_http()
+    if not http:
+        return None
+    model = settings.genai_model.strip()
+    if not model:
+        logger.warning("GENAI_MODEL is empty — set it to a model your GenAI project allows")
+        return None
+    body = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    try:
+        r = await http.post(settings.genai_chat_url, json=body)
+        r.raise_for_status()
+        data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            logger.warning("GenAI response missing choices: %s", data)
+            return None
+        msg = choices[0].get("message") or {}
+        content = msg.get("content")
+        if content is None:
+            return None
+        return str(content).strip()
+    except httpx.HTTPStatusError as e:
+        txt = e.response.text[:800] if e.response.text else ""
+        logger.warning(
+            "GenAI HTTP error: %s — %s", e.response.status_code, txt
+        )
+        if e.response.status_code == 403 and (
+            "does not have access to model" in txt or "access to model" in txt
+        ):
+            logger.warning(
+                "403 model access: set GENAI_MODEL in .env to a model id enabled for your "
+                "GenAI project (internal catalog / project settings)."
+            )
+        return None
+    except Exception as e:
+        logger.warning("GenAI request failed: %s", e)
+        return None
+
+
+def _strip_json_fences(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else raw
+        if raw.lower().startswith("json"):
+            raw = raw[4:].lstrip("\n")
+    return raw.strip()
+
+
+def _parse_plan(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        return json.loads(_strip_json_fences(raw))
+    except json.JSONDecodeError as e:
+        logger.warning("Plan JSON parse failed: %s", e)
+        return None
+
+
+def _fmt(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return f"{n:,}"
+
+
+def bundle_channel_data(
+    query: str,
+    channel_data: dict | None,
+    videos: list[dict],
+) -> dict[str, Any]:
+    if not channel_data:
+        return {"lookup_query": query, "found": False, "error": "No channel matched."}
+    by_views = sorted(
+        videos, key=lambda v: v.get("view_count", 0), reverse=True
+    )
+    return {
+        "lookup_query": query,
+        "found": True,
+        "channel": {
+            "title": channel_data.get("title"),
+            "handle": channel_data.get("handle"),
+            "subscribers": channel_data.get("subscriber_count"),
+            "subscribers_display": _fmt(int(channel_data.get("subscriber_count", 0))),
+            "total_views": channel_data.get("view_count"),
+            "total_views_display": _fmt(int(channel_data.get("view_count", 0))),
+            "video_count": channel_data.get("video_count"),
+            "created_at": channel_data.get("created_at", ""),
+            "description_excerpt": (channel_data.get("description") or "")[:400],
+        },
+        "videos_recent": videos[:20],
+        "videos_highest_views": by_views[:10],
+    }
+
+
+def _summarize_fallback(bundles: list[dict[str, Any]]) -> str:
+    """Minimal grounded text if the final LLM call fails."""
+    lines: list[str] = []
+    for b in bundles:
+        if not b.get("found"):
+            lines.append(f"Channel search \"{b.get('lookup_query', '')}\": not found.")
+            continue
+        ch = b.get("channel") or {}
+        lines.append(
+            f"{ch.get('title', 'Channel')}: "
+            f"{ch.get('subscribers_display', '?')} subscribers, "
+            f"{ch.get('video_count', '?')} videos, "
+            f"{ch.get('total_views_display', '?')} total views."
+        )
+    return "\n".join(lines) if lines else "I could not load YouTube data for that request."
+
+
+async def _plan_turn(user_message: str) -> dict[str, Any] | None:
+    raw = await chat_completion(
+        [
+            {"role": "system", "content": _PLAN_SYSTEM},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=500,
+        temperature=0.2,
+    )
+    plan = _parse_plan(raw)
+    if not plan:
+        return None
+    # Normalize
+    plan.setdefault("reply_direct", False)
+    plan.setdefault("direct_message", None)
+    plan.setdefault("channels_to_lookup", [])
+    plan.setdefault("include_recent_videos", False)
+    plan.setdefault("video_sample_size", 10)
+    if not isinstance(plan["channels_to_lookup"], list):
+        plan["channels_to_lookup"] = []
+    plan["channels_to_lookup"] = [
+        str(x).strip() for x in plan["channels_to_lookup"][:3] if str(x).strip()
+    ]
+    vs = int(plan.get("video_sample_size") or 0)
+    plan["video_sample_size"] = max(5, min(15, vs)) if plan["include_recent_videos"] else 0
+    return plan
+
+
+async def _answer_turn(user_message: str, bundles: list[dict[str, Any]]) -> str | None:
+    payload = json.dumps(bundles, indent=2, default=str)
+    if len(payload) > 28000:
+        payload = payload[:28000] + "\n…(truncated)"
+    return await chat_completion(
+        [
+            {"role": "system", "content": _ANSWER_SYSTEM},
+            {
+                "role": "user",
+                "content": f"User message:\n{user_message}\n\nYouTube data (JSON):\n{payload}",
+            },
+        ],
+        max_tokens=1200,
+        temperature=0.55,
+    )
+
+
+async def classify_and_respond(text: str, youtube: YouTubeAPI) -> str:
+    """Conversational entry: plan with the LLM, pull YouTube data, then answer with the LLM."""
+
+    if not settings.genai_token:
+        logger.warning("GENAI_TOKEN not set")
+        return "The bot is not configured yet. Set GENAI_TOKEN in the environment."
+
+    if not settings.genai_model.strip():
+        logger.warning("GENAI_MODEL not set")
+        return (
+            "Set GENAI_MODEL in your environment to a chat model id your Uber GenAI project "
+            "is allowed to use (for example from your project's model allowlist). "
+            "Plain gpt-4 often returns 403 until your project is provisioned for that model."
+        )
+
+    logger.info("User message (truncated): %s", text[:200])
+
+    plan = await _plan_turn(text)
+    if not plan:
+        return (
+            "I could not interpret that request. Please ask about a YouTube channel "
+            "or video topic, and mention the channel name or @handle if you can."
+        )
+
+    channels = plan.get("channels_to_lookup") or []
+
+    if plan.get("reply_direct"):
+        dm = plan.get("direct_message")
+        if dm:
+            return str(dm).strip()
+        if not channels:
+            return (
+                "Hi! I can help with YouTube channels and videos — stats, recent uploads, "
+                "top videos, or comparisons. Tell me which channel or @handle you care about."
+            )
+        # reply_direct was set without a message but channels were listed — fetch data
+
+    if not channels:
+        return (
+            "Which YouTube channel or creator should I look up? "
+            "Name the channel or @handle and what you want to know."
+        )
+
+    if not settings.youtube_api_key:
+        return "YouTube API is not configured, so I cannot fetch live channel data."
+
+    bundles: list[dict[str, Any]] = []
+    sample = plan.get("video_sample_size") or 10
+    want_videos = bool(plan.get("include_recent_videos"))
+
+    for q in channels:
+        ch = youtube.lookup_channel(q)
+        videos: list[dict] = []
+        if ch and want_videos and ch.get("uploads_playlist_id"):
+            try:
+                videos = youtube.get_recent_videos(
+                    ch["uploads_playlist_id"],
+                    count=sample,
+                )
+            except Exception as e:
+                logger.warning("Video fetch failed for %s: %s", q, e)
+        bundles.append(bundle_channel_data(q, ch, videos))
+
+    answer = await _answer_turn(text, bundles)
+    if answer:
+        return answer.strip()
+    return _summarize_fallback(bundles)

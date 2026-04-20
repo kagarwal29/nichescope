@@ -4,39 +4,18 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    environment:
+      # GenAI
+      GENAI_TOKEN: ${GENAI_TOKEN}
+      GENAI_MODEL: ${GENAI_MODEL:-}
+      # Telegram webhook (optional — leave blank to use polling)
+      TELEGRAM_WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      # Corporate TLS: combined bundle (standard public CAs + Zscaler + Uber CAs).
+      # Docker bridge DNS resolves api.telegram.org; this bundle handles Zscaler TLS inspection.
+      SSL_CERT_FILE: /app/certs/combined-ca-bundle.pem
+      REQUESTS_CA_BUNDLE: /app/certs/combined-ca-bundle.pem
     volumes:
       - ./nichescope:/app/nichescope
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: nichescope
-      POSTGRES_USER: nichescope
-      POSTGRES_PASSWORD: nichescope
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nichescope"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  pgdata:
+      - ./.env:/app/.env:ro
+      - ./data:/app/data
