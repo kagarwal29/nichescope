@@ -12,6 +12,7 @@ dependencies = [
     "python-telegram-bot[job-queue]>=20.0",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.19",
+    "asyncpg>=0.29",
     "google-api-python-client>=2.100.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
