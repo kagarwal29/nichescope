@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir \
     --trusted-host pypi.python.org \
     --trusted-host files.pythonhosted.org \
     --trusted-host pypi.org \
-    .
+    . asyncpg
 
 COPY . .
 
