@@ -5,8 +5,8 @@ Flow:
   2. GenAI decides direct reply vs. which channel(s) to look up + whether to load videos
   3. YouTube API returns current channel/video data
   4. GenAI writes a grounded conversational answer (plain text)
-  5. Contextual follow-up suggestions appended
-  6. Reply to user
+  5. Separate inline-keyboard message with tappable contextual suggestions
+  6. Tapping a suggestion re-runs it through the same pipeline (callback handler)
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import random
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from nichescope.services.guardrails import check_message
@@ -25,130 +25,196 @@ logger = logging.getLogger(__name__)
 
 _youtube = YouTubeAPI()
 
-# ── Suggestion pools ──────────────────────────────────────────────────────────
+# ── Suggestion chip definitions ───────────────────────────────────────────────
+# Each tuple: (button label, callback_data)
+# callback_data prefixes:
+#   q:<text>  — run as a free-text question
+#   w:<name>  — run /watch <name>
+#   c:<cmd>   — run a slash command (digest | watches | radar)
 
-_ONBOARDING = [
-    "How many subs does MrBeast have?",
-    "What are Kurzgesagt's top videos?",
-    "Compare MKBHD and Linus Tech Tips",
-    "Is Veritasium uploading consistently?",
-    "Which Python tutorial channel gets the most views?",
-    "What topics are underserved in finance YouTube?",
+_ONBOARDING_CHIPS = [
+    ("📊 MrBeast stats",          "q:How many subscribers does MrBeast have?"),
+    ("📹 Kurzgesagt top videos",  "q:What are Kurzgesagt's top videos?"),
+    ("⚔️ MKBHD vs Linus",        "q:Compare MKBHD and Linus Tech Tips"),
+    ("📅 Veritasium cadence",     "q:How often does Veritasium upload?"),
+    ("🕳️ Niche gaps",            "q:What topics are underserved in tech YouTube?"),
+    ("📈 3Blue1Brown growth",     "q:Is 3Blue1Brown growing?"),
 ]
 
 _DEEPEN_STATS = [
-    "Show me their recent uploads",
-    "What's their upload frequency?",
-    "Which video format performs best for them?",
+    ("📹 See their recent videos",      "q:Show me their recent uploads"),
+    ("🕐 How often do they upload?",    "q:What is their upload frequency?"),
+    ("🏆 Which format wins for them?",  "q:Which video format performs best for them?"),
 ]
 
 _DEEPEN_VIDEOS = [
-    "What's the strategy behind these titles?",
-    "How are their view counts trending?",
-    "Which video length is winning for them?",
+    ("🧠 What's their strategy?",       "q:What content strategy is driving their views?"),
+    ("📏 Best video length for them?",  "q:Which video length is working best for them?"),
+    ("📉 Any drop in performance?",     "q:Are their view counts trending up or down?"),
 ]
 
 _COMPETITOR_ANGLES = [
-    "Who are their main competitors?",
-    "What niche gaps do you see here?",
-    "Which topics are they NOT covering?",
+    ("🕵️ Who are their rivals?",        "q:Who are their main competitors?"),
+    ("🕳️ What gaps exist here?",        "q:What niche gaps do you see in this space?"),
+    ("🚫 What are they NOT covering?",  "q:What topics are they not covering?"),
 ]
 
-_WATCHLIST_NUDGE = [
-    "/watch {ch}  — track daily",
-    "/digest  — competitor pulse now",
-]
-
-_MOAT_IDEAS = [
-    "What should I make next to beat them?",
-    "Where is the open lane in this niche?",
-    "What's working in this niche right now?",
+_STRATEGY_IDEAS = [
+    ("🚀 What should I make next?",     "q:What should I make next to stay ahead?"),
+    ("🛣️ Where is the open lane?",      "q:Where is the open lane in this niche?"),
+    ("⚡ What's working right now?",    "q:What content formats are winning right now?"),
 ]
 
 
-def _build_suggestions(meta: ResponseMeta, user_text: str) -> list[str]:
-    """Return 2–3 crisp follow-up prompts tailored to what was just answered."""
+def _build_chips(meta: ResponseMeta, user_text: str) -> list[tuple[str, str]]:
+    """Return 2–3 (label, callback_data) tuples tailored to what was just answered."""
     if meta.plan_type == "direct":
-        # Greeting / off-topic → onboarding examples
-        picks = random.sample(_ONBOARDING, 3)
-        return picks
+        return random.sample(_ONBOARDING_CHIPS, 3)
 
     channels = meta.channels_found or meta.channels_queried
     first = channels[0] if channels else ""
     multi = len(channels) > 1
+    chips: list[tuple[str, str]] = []
 
-    suggestions: list[str] = []
-
-    # Always offer to track if a channel was found and not already a /watch question
-    if first and "/watch" not in user_text.lower():
-        suggestions.append(f"/watch {first}  — add to competitor radar")
+    # Offer to track the channel(s) found — most valuable recurring action
+    if first and "watch" not in user_text.lower() and "/watch" not in user_text:
+        label = f"➕ Track {first[:20]}"
+        chips.append((label, f"w:{first}"))
 
     if multi:
-        # Already comparing — deepen into strategy and gaps
-        suggestions += random.sample(_COMPETITOR_ANGLES, 1)
-        suggestions += random.sample(_MOAT_IDEAS, 1)
+        chips += random.sample(_COMPETITOR_ANGLES, 1)
+        chips += random.sample(_STRATEGY_IDEAS, 1)
     else:
-        # Single channel — pivot depth axis based on what was already fetched
         if meta.had_videos:
-            suggestions += random.sample(_DEEPEN_VIDEOS, 1)
-            suggestions += random.sample(_COMPETITOR_ANGLES, 1)
+            chips += random.sample(_DEEPEN_VIDEOS, 1)
+            chips += random.sample(_STRATEGY_IDEAS, 1)
         else:
-            suggestions += random.sample(_DEEPEN_STATS, 1)
-            suggestions += random.sample(_MOAT_IDEAS, 1)
+            chips += random.sample(_DEEPEN_STATS, 1)
+            chips += random.sample(_COMPETITOR_ANGLES, 1)
 
-    # Trim to 3, deduplicate
+    # Deduplicate, cap at 3
     seen: set[str] = set()
-    out: list[str] = []
-    for s in suggestions:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
+    out: list[tuple[str, str]] = []
+    for chip in chips:
+        if chip[1] not in seen:
+            seen.add(chip[1])
+            out.append(chip)
         if len(out) == 3:
             break
     return out
 
 
-def _format_suggestions(suggestions: list[str], channels: list[str]) -> str:
-    """Format suggestions as a plain-text footer block."""
-    if not suggestions:
-        return ""
-
-    lines = ["\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"]
-    lines.append("Try next:")
-    for s in suggestions:
-        # Replace {ch} placeholder with first found channel name
-        first = channels[0] if channels else ""
-        s = s.replace("{ch}", first)
-        lines.append(f"  \u2022 {s}")
-    return "\n".join(lines)
+def _make_keyboard(chips: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """One button per row — mirrors the web tutorial's vertical chip strip."""
+    rows = [[InlineKeyboardButton(text=label, callback_data=data[:64])]
+            for label, data in chips]
+    return InlineKeyboardMarkup(rows)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point for every non-command text message."""
-    text = update.message.text
-    chat_id = update.effective_chat.id
+# ── Core processing (shared by message handler + callback handler) ────────────
 
-    # Step 1: Guardrails
+async def _process_query(
+    text: str,
+    chat_id: int,
+    reply_fn,        # async callable(str) → Message  (sends the 🤔 placeholder)
+    edit_fn,         # async callable(Message, str)   (edits placeholder → answer)
+    followup_fn,     # async callable(str, keyboard)  (sends the chip strip)
+) -> None:
     result = check_message(chat_id, text)
     if not result.safe:
-        await update.message.reply_text(result.reason)
+        await followup_fn(result.reason, None)
         return
 
-    text = result.sanitized_text
-
-    # Steps 2–4: LLM classifies → YouTube fetches → LLM responds
-    thinking = await update.message.reply_text("\U0001f914")
+    thinking = await reply_fn("\U0001f914")
     try:
-        answer, meta = await classify_and_respond(text, _youtube)
-        suggestions = _build_suggestions(meta, text)
-        suffix = _format_suggestions(suggestions, meta.channels_found or meta.channels_queried)
-        await thinking.edit_text(answer + suffix)
+        answer, meta = await classify_and_respond(result.sanitized_text, _youtube)
+        await edit_fn(thinking, answer)
+
+        chips = _build_chips(meta, text)
+        if chips:
+            keyboard = _make_keyboard(chips)
+            await followup_fn("\u2500\u2500 Try next:", keyboard)
     except Exception:
-        logger.exception("Handler error for chat_id=%d", chat_id)
-        await thinking.edit_text(
+        logger.exception("Query error for chat_id=%d", chat_id)
+        await edit_fn(
+            thinking,
             "\U0001f605 Something went wrong. Try rephrasing!\n\n"
             "Examples:\n"
             "\u2022 How many subs does MrBeast have?\n"
             "\u2022 Compare MKBHD and Linus Tech Tips\n"
             "\u2022 What are Kurzgesagt's top videos?",
         )
+
+
+# ── Message handler ───────────────────────────────────────────────────────────
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Entry point for every non-command text message."""
+    text = update.message.text
+    chat_id = update.effective_chat.id
+
+    async def _reply(t):
+        return await update.message.reply_text(t)
+
+    async def _edit(msg, t):
+        await msg.edit_text(t)
+
+    async def _followup(t, kb):
+        await update.message.reply_text(t, reply_markup=kb)
+
+    await _process_query(text, chat_id, _reply, _edit, _followup)
+
+
+# ── Callback handler (button taps) ────────────────────────────────────────────
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles taps on any inline keyboard button produced by this bot."""
+    query = update.callback_query
+    await query.answer()  # clears the Telegram loading spinner
+
+    data = query.data or ""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    # ── /watch shortcut ──
+    if data.startswith("w:"):
+        channel = data[2:].strip()
+        if not channel:
+            await bot.send_message(chat_id, "Usage: /watch <channel name or @handle>")
+            return
+        # Simulate the /watch command by delegating to watch_commands
+        from nichescope.bot.watch_commands import _execute_watch
+        await bot.send_message(chat_id, f"Watching \u2026 searching for \"{channel}\"")
+        await _execute_watch(chat_id, channel, bot)
+        return
+
+    # ── Built-in command shortcuts ──
+    if data.startswith("c:"):
+        cmd = data[2:]
+        if cmd == "digest":
+            from nichescope.bot.watch_commands import _execute_digest
+            await _execute_digest(chat_id, bot)
+        elif cmd == "watches":
+            from nichescope.bot.watch_commands import _execute_watches
+            await _execute_watches(chat_id, bot)
+        return
+
+    # ── Free-text question ──
+    if data.startswith("q:"):
+        text = data[2:].strip()
+        if not text:
+            return
+
+        # Show the chosen question so the conversation feels natural
+        await bot.send_message(chat_id, f"\U0001f449 {text}")
+
+        async def _reply(_t):
+            return await bot.send_message(chat_id, _t)
+
+        async def _edit(msg, t):
+            await msg.edit_text(t)
+
+        async def _followup(t, kb):
+            await bot.send_message(chat_id, t, reply_markup=kb)
+
+        await _process_query(text, chat_id, _reply, _edit, _followup)

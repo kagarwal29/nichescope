@@ -1,4 +1,8 @@
-"""Moat MVP: competitor watchlist + digest commands."""
+"""Moat MVP: competitor watchlist + digest commands.
+
+Exposes both Update-based command handlers (for slash commands)
+and _execute_* coroutines usable directly by the callback handler.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ import logging
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from telegram import Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from nichescope.config import settings
@@ -25,29 +29,167 @@ logger = logging.getLogger(__name__)
 _youtube = YouTubeAPI()
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Onboarding — sent when a user first opens the bot or types /start."""
+# ── Inline keyboards ──────────────────────────────────────────────────────────
+
+def _start_explore_keyboard() -> InlineKeyboardMarkup:
+    """Chips shown on /start — mirrors the web tutorial's example cards."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 MrBeast stats",         callback_data="q:How many subscribers does MrBeast have?")],
+        [InlineKeyboardButton("⚔️ MKBHD vs Linus",       callback_data="q:Compare MKBHD and Linus Tech Tips")],
+        [InlineKeyboardButton("📹 Kurzgesagt top videos", callback_data="q:What are Kurzgesagt's top videos?")],
+        [InlineKeyboardButton("🕳️ Niche gaps",           callback_data="q:What topics are underserved in tech YouTube?")],
+        [InlineKeyboardButton("📅 Upload frequency",      callback_data="q:How often does Veritasium upload?")],
+    ])
+
+def _start_radar_keyboard() -> InlineKeyboardMarkup:
+    """Competitor radar shortcuts on /start."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📡 Digest now", callback_data="c:digest"),
+         InlineKeyboardButton("📋 My watchlist", callback_data="c:watches")],
+    ])
+
+def _after_watch_keyboard(title: str) -> InlineKeyboardMarkup:
+    """Chips shown right after /watch succeeds."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📡 Get competitor pulse now", callback_data="c:digest")],
+        [InlineKeyboardButton("📋 See my watchlist",         callback_data="c:watches")],
+        [InlineKeyboardButton("🕳️ Find niche gaps",         callback_data="q:What niche gaps exist in this space?")],
+    ])
+
+def _after_digest_keyboard() -> InlineKeyboardMarkup:
+    """Chips shown after /digest — push into strategy territory."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛣️ Where is the open lane?",    callback_data="q:Where is the open lane in this niche?")],
+        [InlineKeyboardButton("🚀 What should I make next?",   callback_data="q:What should I make next to beat them?")],
+        [InlineKeyboardButton("⚡ What format is winning?",    callback_data="q:Which video format is winning right now?")],
+    ])
+
+def _empty_watchlist_keyboard() -> InlineKeyboardMarkup:
+    """Shown when /watches or /digest is run with no channels."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Watch MKBHD",             callback_data="w:MKBHD")],
+        [InlineKeyboardButton("➕ Watch Linus Tech Tips",   callback_data="w:Linus Tech Tips")],
+        [InlineKeyboardButton("➕ Watch Kurzgesagt",        callback_data="w:Kurzgesagt")],
+    ])
+
+
+# ── /start — onboarding ───────────────────────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Onboarding — mirrors the web tutorial's step-card structure with tappable chips."""
     if not update.message:
         return
+
     await update.message.reply_text(
-        "Welcome to NicheScope — your YouTube intelligence agent.\n\n"
-        "Just chat naturally. No commands needed for questions.\n\n"
-        "Things you can ask:\n"
-        "  \u2022 How many subs does MrBeast have?\n"
-        "  \u2022 Compare MKBHD and Linus Tech Tips\n"
-        "  \u2022 What are Kurzgesagt's top videos this year?\n"
-        "  \u2022 Which topics are underserved in finance YouTube?\n"
-        "  \u2022 Is Veritasium uploading consistently?\n\n"
-        "Competitor radar (tracks channels for you):\n"
-        "  \u2022 /watch <channel>  \u2014 add to watchlist\n"
-        "  \u2022 /digest  \u2014 AI pulse + 3 next moves\n"
-        "  \u2022 /watches  \u2014 your list\n"
-        "  \u2022 /unwatch N  \u2014 remove by number\n\n"
-        "Daily digest auto-sends at 8:00 UTC once you have a watchlist."
+        "Welcome to NicheScope \U0001f52d\n\n"
+        "Your YouTube intelligence agent. Ask anything about channels, "
+        "creators, or trends — no commands needed for questions.\n\n"
+        "Tap any example below to try it instantly:",
+        reply_markup=_start_explore_keyboard(),
+    )
+
+    await update.message.reply_text(
+        "Track competitors with the radar:\n"
+        "/watch <channel>  \u2014 add to watchlist\n"
+        "/digest  \u2014 AI-powered competitor pulse\n"
+        "/watches  \u2014 your list  \u00b7  /unwatch N  \u2014 remove\n\n"
+        "Or jump straight in:",
+        reply_markup=_start_radar_keyboard(),
     )
 
 
-async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ── _execute_* helpers (called by both commands and the callback handler) ─────
+
+async def _execute_watch(chat_id: int, query: str, bot: Bot) -> None:
+    if not settings.youtube_api_key:
+        await bot.send_message(chat_id, "YouTube API key is not configured.")
+        return
+
+    ch = _youtube.lookup_channel(query)
+    if not ch:
+        await bot.send_message(chat_id, f'Could not find a channel for "{query}". Try another name or @handle.')
+        return
+
+    cid = ch["channel_id"]
+    title = ch.get("title") or query
+
+    try:
+        async with get_session() as session:
+            session.add(WatchChannel(
+                chat_id=chat_id,
+                youtube_channel_id=cid,
+                channel_title=title[:500],
+            ))
+    except IntegrityError:
+        await bot.send_message(chat_id, f'Already watching "{title}".')
+        return
+
+    await bot.send_message(
+        chat_id,
+        f'Watching "{title}".\n\nAuto-digest drops daily at ~{settings.digest_hour_utc}:00 UTC.',
+        reply_markup=_after_watch_keyboard(title),
+    )
+
+
+async def _execute_digest(chat_id: int, bot: Bot) -> None:
+    if not settings.youtube_api_key:
+        await bot.send_message(chat_id, "YouTube API key is not configured.")
+        return
+
+    text = await generate_digest_message(chat_id, _youtube)
+    if not text:
+        await bot.send_message(
+            chat_id,
+            "Your watchlist is empty. Add a channel first:",
+            reply_markup=_empty_watchlist_keyboard(),
+        )
+        return
+
+    body = digest_preview_header() + text
+    for part in telegram_chunks(body):
+        await bot.send_message(chat_id, part)
+
+    await bot.send_message(
+        chat_id,
+        "\u2500\u2500 Take it further:",
+        reply_markup=_after_digest_keyboard(),
+    )
+
+
+async def _execute_watches(chat_id: int, bot: Bot) -> None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(WatchChannel)
+            .where(WatchChannel.chat_id == chat_id)
+            .order_by(WatchChannel.created_at.asc()),
+        )
+        rows = list(result.scalars().all())
+
+    if not rows:
+        await bot.send_message(
+            chat_id,
+            "Your watchlist is empty. Add a channel to get started:",
+            reply_markup=_empty_watchlist_keyboard(),
+        )
+        return
+
+    lines = ["Your competitor watchlist (use /unwatch N to remove):\n"]
+    for i, w in enumerate(rows, start=1):
+        lines.append(f"{i}. {w.channel_title or w.youtube_channel_id}")
+    lines.append(f"\nDaily digest: {settings.digest_hour_utc}:00 UTC  ({'on' if settings.digest_enabled else 'off'})")
+
+    await bot.send_message(
+        chat_id,
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📡 Digest now", callback_data="c:digest")],
+        ]),
+    )
+
+
+# ── Slash command handlers (thin wrappers around _execute_*) ─────────────────
+
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Add a competitor channel to your digest watchlist."""
     if not update.message:
         return
@@ -55,47 +197,13 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text(
-            "Usage: /watch <channel name or @handle>\n"
-            "Example: /watch MKBHD"
+            "Usage: /watch <channel name or @handle>\nExample: /watch MKBHD"
         )
         return
-    if not settings.youtube_api_key:
-        await update.message.reply_text("YouTube API key is not configured.")
-        return
-
-    query = " ".join(args).strip()
-    ch = _youtube.lookup_channel(query)
-    if not ch:
-        await update.message.reply_text(f'Could not find a channel for "{query}". Try another name or @handle.')
-        return
-
-    cid = ch["channel_id"]
-    title = ch.get("title") or ""
-
-    try:
-        async with get_session() as session:
-            session.add(
-                WatchChannel(
-                    chat_id=chat_id,
-                    youtube_channel_id=cid,
-                    channel_title=title[:500],
-                )
-            )
-    except IntegrityError:
-        await update.message.reply_text(f'Already watching "{title}".')
-        return
-
-    await update.message.reply_text(
-        f'Watching "{title}".\n\n'
-        f"Try next:\n"
-        f"  \u2022 /digest  \u2014 get a competitor pulse right now\n"
-        f"  \u2022 /watch <another channel>  \u2014 add more to compare\n"
-        f"  \u2022 /watches  \u2014 see your full list\n\n"
-        f"Auto-digest drops daily at ~{settings.digest_hour_utc}:00 UTC."
-    )
+    await _execute_watch(chat_id, " ".join(args).strip(), context.bot)
 
 
-async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Remove a channel by index from /watches."""
     if not update.message:
         return
@@ -124,87 +232,43 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     victim = rows[n - 1]
     label = victim.channel_title or victim.youtube_channel_id
-
     async with get_session() as session:
         await session.execute(delete(WatchChannel).where(WatchChannel.id == victim.id))
 
-    await update.message.reply_text(f"Stopped watching: {label}")
-
-
-async def cmd_watches(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List tracked channels."""
-    if not update.message:
-        return
-    chat_id = update.effective_chat.id
-
-    async with get_session() as session:
-        result = await session.execute(
-            select(WatchChannel)
-            .where(WatchChannel.chat_id == chat_id)
-            .order_by(WatchChannel.created_at.asc()),
-        )
-        rows = list(result.scalars().all())
-
-    if not rows:
-        await update.message.reply_text(
-            "Your watchlist is empty.\n"
-            "/watch <channel> — track competitors for the daily digest + /digest pulse."
-        )
-        return
-
-    lines = ["Your competitor watchlist (use /unwatch N to remove):\n"]
-    for i, w in enumerate(rows, start=1):
-        t = w.channel_title or w.youtube_channel_id
-        lines.append(f"{i}. {t}")
-    lines.append("")
-    lines.append(f"Daily digest (UTC {settings.digest_hour_utc}:00): {'on' if settings.digest_enabled else 'off'}")
-    await update.message.reply_text("\n".join(lines))
-
-
-async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate digest now using live YouTube data + GenAI."""
-    if not update.message:
-        return
-    chat_id = update.effective_chat.id
-
-    if not settings.youtube_api_key:
-        await update.message.reply_text("YouTube API key is not configured.")
-        return
-
-    text = await generate_digest_message(chat_id, _youtube)
-    if not text:
-        await update.message.reply_text(
-            "Nothing to digest yet — add channels with /watch.\n"
-            "If you already added some, check GENAI_TOKEN and GENAI_MODEL for the AI summary."
-        )
-        return
-
-    body = digest_preview_header() + text
-    parts = telegram_chunks(body)
-    for i, part in enumerate(parts):
-        await update.message.reply_text(part)
-
-    # Nudge toward strategy questions after digest
     await update.message.reply_text(
-        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "Take it further:\n"
-        "  \u2022 Where is the open lane in this niche?\n"
-        "  \u2022 What should I make next to beat them?\n"
-        "  \u2022 Which video format is winning for [channel name]?\n"
-        "  \u2022 /watch <channel>  \u2014 add another competitor"
+        f"Stopped watching: {label}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 View updated watchlist", callback_data="c:watches")],
+        ]),
     )
 
 
-async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_watches(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_watches(update.effective_chat.id, context.bot)
+
+
+async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_digest(update.effective_chat.id, context.bot)
+
+
+async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(
-        "Competitor radar (Moat MVP)\n\n"
-        "/watch <name or @handle> — add to your watchlist\n"
-        "/watches — numbered list\n"
-        "/unwatch <number> — remove\n"
-        "/digest — competitor pulse + next moves now\n\n"
-        f"Scheduled digest: ~{settings.digest_hour_utc}:00 UTC daily "
-        f"({'enabled' if settings.digest_enabled else 'disabled'}).\n\n"
-        "Everything else — ask in plain chat (channel intel)."
+        "Competitor radar\n\n"
+        "/watch <name>  \u2014 add to watchlist\n"
+        "/watches  \u2014 numbered list\n"
+        "/unwatch N  \u2014 remove by number\n"
+        "/digest  \u2014 AI pulse + 3 next moves\n\n"
+        f"Daily digest: ~{settings.digest_hour_utc}:00 UTC "
+        f"({'enabled' if settings.digest_enabled else 'disabled'})\n\n"
+        "For anything else — just ask in chat.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📡 Digest now",       callback_data="c:digest"),
+             InlineKeyboardButton("📋 My watchlist",     callback_data="c:watches")],
+        ]),
     )

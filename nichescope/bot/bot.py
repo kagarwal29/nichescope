@@ -14,9 +14,9 @@ import logging
 from datetime import time, timezone
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, JobQueue, MessageHandler, filters
 
-from nichescope.bot.handler import handle_message
+from nichescope.bot.handler import handle_callback, handle_message
 from nichescope.bot.watch_commands import (
     cmd_digest,
     cmd_start,
@@ -98,6 +98,7 @@ def create_bot_app():
 
     register_digest_scheduler(app)
 
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     logger.info("Telegram bot handlers registered")
     return app
