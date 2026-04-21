@@ -113,56 +113,69 @@ def _make_keyboard(chips: list[tuple[str, str]]) -> InlineKeyboardMarkup:
 
 # ── Core processing (shared by message handler + callback handler) ────────────
 
-async def _process_query(
-    text: str,
-    chat_id: int,
-    reply_fn,        # async callable(str) → Message  (sends the 🤔 placeholder)
-    edit_fn,         # async callable(Message, str)   (edits placeholder → answer)
-    followup_fn,     # async callable(str, keyboard)  (sends the chip strip)
-) -> None:
+async def _process_query(chat_id: int, text: str, bot) -> None:
+    """Run the full pipeline and send results to chat_id using the bot directly.
+
+    Uses bot.send_message / bot.edit_message_text exclusively — avoids the
+    reply_to_message_id that reply_text() adds by default, which causes 400s
+    when the original message can't be found by Telegram.
+    """
     result = check_message(chat_id, text)
     if not result.safe:
-        await followup_fn(result.reason, None)
+        await bot.send_message(chat_id, result.reason)
         return
 
-    thinking = await reply_fn("\U0001f914")
+    thinking = None
     try:
+        thinking = await bot.send_message(chat_id, "\U0001f914")
+
         answer, meta = await classify_and_respond(result.sanitized_text, _youtube)
-        await edit_fn(thinking, answer)
+
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=thinking.message_id,
+            text=answer,
+        )
 
         chips = _build_chips(meta, text)
         if chips:
-            keyboard = _make_keyboard(chips)
-            await followup_fn("\u2500\u2500 Try next:", keyboard)
+            await bot.send_message(
+                chat_id,
+                "\u2500\u2500 Try next:",
+                reply_markup=_make_keyboard(chips),
+            )
+
     except Exception:
         logger.exception("Query error for chat_id=%d", chat_id)
-        await edit_fn(
-            thinking,
+        fallback = (
             "\U0001f605 Something went wrong. Try rephrasing!\n\n"
             "Examples:\n"
             "\u2022 How many subs does MrBeast have?\n"
             "\u2022 Compare MKBHD and Linus Tech Tips\n"
-            "\u2022 What are Kurzgesagt's top videos?",
+            "\u2022 What are Kurzgesagt's top videos?"
         )
+        if thinking:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=thinking.message_id,
+                    text=fallback,
+                )
+            except Exception:
+                await bot.send_message(chat_id, fallback)
+        else:
+            await bot.send_message(chat_id, fallback)
 
 
 # ── Message handler ───────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Entry point for every non-command text message."""
-    text = update.message.text
-    chat_id = update.effective_chat.id
-
-    async def _reply(t):
-        return await update.message.reply_text(t)
-
-    async def _edit(msg, t):
-        await msg.edit_text(t)
-
-    async def _followup(t, kb):
-        await update.message.reply_text(t, reply_markup=kb)
-
-    await _process_query(text, chat_id, _reply, _edit, _followup)
+    await _process_query(
+        update.effective_chat.id,
+        update.message.text,
+        context.bot,
+    )
 
 
 # ── Callback handler (button taps) ────────────────────────────────────────────
@@ -182,9 +195,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not channel:
             await bot.send_message(chat_id, "Usage: /watch <channel name or @handle>")
             return
-        # Simulate the /watch command by delegating to watch_commands
         from nichescope.bot.watch_commands import _execute_watch
-        await bot.send_message(chat_id, f"Watching \u2026 searching for \"{channel}\"")
+        await bot.send_message(chat_id, f"Searching for \"{channel}\" \u2026")
         await _execute_watch(chat_id, channel, bot)
         return
 
@@ -204,17 +216,5 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         text = data[2:].strip()
         if not text:
             return
-
-        # Show the chosen question so the conversation feels natural
         await bot.send_message(chat_id, f"\U0001f449 {text}")
-
-        async def _reply(_t):
-            return await bot.send_message(chat_id, _t)
-
-        async def _edit(msg, t):
-            await msg.edit_text(t)
-
-        async def _followup(t, kb):
-            await bot.send_message(chat_id, t, reply_markup=kb)
-
-        await _process_query(text, chat_id, _reply, _edit, _followup)
+        await _process_query(chat_id, text, bot)
