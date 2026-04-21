@@ -79,6 +79,26 @@ app = FastAPI(
 )
 
 
+@app.get("/debug/webhook")
+async def debug_webhook():
+    """Returns live Telegram getWebhookInfo — useful for diagnosing delivery issues."""
+    if _bot_app is None:
+        return {"error": "bot not initialised"}
+    try:
+        info = await _bot_app.bot.get_webhook_info()
+        return {
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_date": str(info.last_error_date) if info.last_error_date else None,
+            "last_error_message": info.last_error_message,
+            "max_connections": info.max_connections,
+            "allowed_updates": list(info.allowed_updates or []),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/health")
 async def health():
     mode = "webhook" if settings.telegram_webhook_url else "polling"
