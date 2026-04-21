@@ -12,7 +12,6 @@ Flow:
 from __future__ import annotations
 
 import logging
-import random
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -32,65 +31,60 @@ _youtube = YouTubeAPI()
 #   w:<name>  — run /watch <name>
 #   c:<cmd>   — run a slash command (digest | watches | radar)
 
-_ONBOARDING_CHIPS = [
-    ("📊 MrBeast stats",          "q:How many subscribers does MrBeast have?"),
-    ("📹 Kurzgesagt top videos",  "q:What are Kurzgesagt's top videos?"),
-    ("⚔️ MKBHD vs Linus",        "q:Compare MKBHD and Linus Tech Tips"),
-    ("📅 Veritasium cadence",     "q:How often does Veritasium upload?"),
-    ("🕳️ Niche gaps",            "q:What topics are underserved in tech YouTube?"),
-    ("📈 3Blue1Brown growth",     "q:Is 3Blue1Brown growing?"),
+# Shown when there is no channel context yet — guide toward commands
+_COMMAND_CHIPS = [
+    ("📡 /digest  — competitor pulse",  "c:digest"),
+    ("📋 /watches  — my watchlist",     "c:watches"),
+    ("🛰️ /radar  — all commands",      "c:radar"),
 ]
 
-_DEEPEN_STATS = [
-    ("📹 See their recent videos",      "q:Show me their recent uploads"),
-    ("🕐 How often do they upload?",    "q:What is their upload frequency?"),
-    ("🏆 Which format wins for them?",  "q:Which video format performs best for them?"),
-]
 
-_DEEPEN_VIDEOS = [
-    ("🧠 What's their strategy?",       "q:What content strategy is driving their views?"),
-    ("📏 Best video length for them?",  "q:Which video length is working best for them?"),
-    ("📉 Any drop in performance?",     "q:Are their view counts trending up or down?"),
-]
+def _channel_chips(first: str, had_videos: bool) -> list[tuple[str, str]]:
+    """Build contextual chips using the ACTUAL channel name found in this query."""
+    name = first[:24]
+    if had_videos:
+        return [
+            (f"🧠 Strategy behind {name}",      f"q:What content strategy is driving views for {first}?"),
+            (f"📏 Best video length for {name}", f"q:Which video length is working best for {first}?"),
+            (f"🕳️ Gaps in {name}'s niche",      f"q:What niche gaps exist in {first}'s content space?"),
+        ]
+    return [
+        (f"📹 Recent videos by {name}",       f"q:Show me recent videos from {first}"),
+        (f"🕐 Upload cadence of {name}",      f"q:How often does {first} upload?"),
+        (f"🕵️ Who competes with {name}?",    f"q:Who are {first}'s main competitors?"),
+    ]
 
-_COMPETITOR_ANGLES = [
-    ("🕵️ Who are their rivals?",        "q:Who are their main competitors?"),
-    ("🕳️ What gaps exist here?",        "q:What niche gaps do you see in this space?"),
-    ("🚫 What are they NOT covering?",  "q:What topics are they not covering?"),
-]
 
-_STRATEGY_IDEAS = [
-    ("🚀 What should I make next?",     "q:What should I make next to stay ahead?"),
-    ("🛣️ Where is the open lane?",      "q:Where is the open lane in this niche?"),
-    ("⚡ What's working right now?",    "q:What content formats are winning right now?"),
-]
+def _multi_channel_chips(channels: list[str]) -> list[tuple[str, str]]:
+    """Chips for a comparison / multi-channel query."""
+    combined = " and ".join(c[:15] for c in channels[:2])
+    return [
+        (f"🕳️ Gaps between them",           f"q:What niche gaps exist between {channels[0]} and {channels[1] if len(channels)>1 else channels[0]}?"),
+        (f"🚀 Open lane in this space",     f"q:Where is the open lane between {combined}?"),
+        (f"⚡ What format is winning?",     f"q:Which video format is winning for {combined} right now?"),
+    ]
 
 
 def _build_chips(meta: ResponseMeta, user_text: str) -> list[tuple[str, str]]:
-    """Return 2–3 (label, callback_data) tuples tailored to what was just answered."""
-    if meta.plan_type == "direct":
-        return random.sample(_ONBOARDING_CHIPS, 3)
-
+    """Return up to 3 (label, callback_data) chips tailored to what was just answered."""
     channels = meta.channels_found or meta.channels_queried
-    first = channels[0] if channels else ""
+
+    # No channel context → guide toward commands
+    if meta.plan_type == "direct" or not channels:
+        return list(_COMMAND_CHIPS)
+
+    first = channels[0]
     multi = len(channels) > 1
     chips: list[tuple[str, str]] = []
 
-    # Offer to track the channel(s) found — most valuable recurring action
+    # Offer to track the channel found — only if not already a watch command
     if first and "watch" not in user_text.lower() and "/watch" not in user_text:
-        label = f"➕ Track {first[:20]}"
-        chips.append((label, f"w:{first}"))
+        chips.append((f"➕ Track {first[:20]}", f"w:{first}"))
 
     if multi:
-        chips += random.sample(_COMPETITOR_ANGLES, 1)
-        chips += random.sample(_STRATEGY_IDEAS, 1)
+        chips += _multi_channel_chips(channels)[:2]
     else:
-        if meta.had_videos:
-            chips += random.sample(_DEEPEN_VIDEOS, 1)
-            chips += random.sample(_STRATEGY_IDEAS, 1)
-        else:
-            chips += random.sample(_DEEPEN_STATS, 1)
-            chips += random.sample(_COMPETITOR_ANGLES, 1)
+        chips += _channel_chips(first, meta.had_videos)[:2]
 
     # Deduplicate, cap at 3
     seen: set[str] = set()
@@ -149,10 +143,11 @@ async def _process_query(chat_id: int, text: str, bot) -> None:
         logger.exception("Query error for chat_id=%d", chat_id)
         fallback = (
             "\U0001f605 Something went wrong. Try rephrasing!\n\n"
-            "Examples:\n"
-            "\u2022 How many subs does MrBeast have?\n"
-            "\u2022 Compare MKBHD and Linus Tech Tips\n"
-            "\u2022 What are Kurzgesagt's top videos?"
+            "You can ask things like:\n"
+            "\u2022 Stats or recent videos for any channel you name\n"
+            "\u2022 Compare two channels\n"
+            "\u2022 What topics are underserved in a niche?\n\n"
+            "Or use /radar to see all available commands."
         )
         if thinking:
             try:

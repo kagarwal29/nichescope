@@ -33,6 +33,11 @@ _BLOCK_PATTERNS = [
 ]
 
 
+def clear_user_state(chat_id: int) -> None:
+    """Reset per-user session state. Call on /start to give a fresh session."""
+    _rate_windows.pop(chat_id, None)
+
+
 def check_message(chat_id: int, text: str) -> GuardrailResult:
     if not text or not text.strip():
         return GuardrailResult(safe=False, reason="Empty message")

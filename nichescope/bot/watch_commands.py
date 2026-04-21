@@ -31,21 +31,12 @@ _youtube = YouTubeAPI()
 
 # ── Inline keyboards ──────────────────────────────────────────────────────────
 
-def _start_explore_keyboard() -> InlineKeyboardMarkup:
-    """Chips shown on /start — mirrors the web tutorial's example cards."""
+def _start_commands_keyboard() -> InlineKeyboardMarkup:
+    """Commands shown on /start — no assumed channels."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 MrBeast stats",         callback_data="q:How many subscribers does MrBeast have?")],
-        [InlineKeyboardButton("⚔️ MKBHD vs Linus",       callback_data="q:Compare MKBHD and Linus Tech Tips")],
-        [InlineKeyboardButton("📹 Kurzgesagt top videos", callback_data="q:What are Kurzgesagt's top videos?")],
-        [InlineKeyboardButton("🕳️ Niche gaps",           callback_data="q:What topics are underserved in tech YouTube?")],
-        [InlineKeyboardButton("📅 Upload frequency",      callback_data="q:How often does Veritasium upload?")],
-    ])
-
-def _start_radar_keyboard() -> InlineKeyboardMarkup:
-    """Competitor radar shortcuts on /start."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📡 Digest now", callback_data="c:digest"),
-         InlineKeyboardButton("📋 My watchlist", callback_data="c:watches")],
+        [InlineKeyboardButton("📡 /digest  — competitor pulse",  callback_data="c:digest")],
+        [InlineKeyboardButton("📋 /watches  — my watchlist",     callback_data="c:watches")],
+        [InlineKeyboardButton("🛰️ /radar  — all commands",      callback_data="c:radar")],
     ])
 
 def _after_watch_keyboard(title: str) -> InlineKeyboardMarkup:
@@ -67,34 +58,27 @@ def _after_digest_keyboard() -> InlineKeyboardMarkup:
 def _empty_watchlist_keyboard() -> InlineKeyboardMarkup:
     """Shown when /watches or /digest is run with no channels."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Watch MKBHD",             callback_data="w:MKBHD")],
-        [InlineKeyboardButton("➕ Watch Linus Tech Tips",   callback_data="w:Linus Tech Tips")],
-        [InlineKeyboardButton("➕ Watch Kurzgesagt",        callback_data="w:Kurzgesagt")],
+        [InlineKeyboardButton("🛰️ How to add channels (/radar)", callback_data="c:radar")],
     ])
 
 
 # ── /start — onboarding ───────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Onboarding — mirrors the web tutorial's step-card structure with tappable chips."""
+    """Onboarding — clear session state, show commands."""
     if not update.message:
         return
 
-    await update.message.reply_text(
-        "Welcome to NicheScope \U0001f52d\n\n"
-        "Your YouTube intelligence agent. Ask anything about channels, "
-        "creators, or trends — no commands needed for questions.\n\n"
-        "Tap any example below to try it instantly:",
-        reply_markup=_start_explore_keyboard(),
-    )
+    from nichescope.services.guardrails import clear_user_state
+    clear_user_state(update.effective_chat.id)
 
     await update.message.reply_text(
-        "Track competitors with the radar:\n"
-        "/watch <channel>  \u2014 add to watchlist\n"
-        "/digest  \u2014 AI-powered competitor pulse\n"
-        "/watches  \u2014 your list  \u00b7  /unwatch N  \u2014 remove\n\n"
-        "Or jump straight in:",
-        reply_markup=_start_radar_keyboard(),
+        "Welcome to NicheScope \U0001f52d\n\n"
+        "Your YouTube intelligence agent.\n\n"
+        "Just type any YouTube channel name or ask a question \u2014 "
+        "I'll look up real data and answer.\n\n"
+        "Or jump straight to a command:",
+        reply_markup=_start_commands_keyboard(),
     )
 
 
@@ -140,7 +124,10 @@ async def _execute_digest(chat_id: int, bot: Bot) -> None:
     if not text:
         await bot.send_message(
             chat_id,
-            "Your watchlist is empty. Add a channel first:",
+            "Your watchlist is empty.\n\n"
+            "Add a channel you want to track:\n"
+            "/watch <channel name>\n\n"
+            "Example: /watch <name of a channel you care about>",
             reply_markup=_empty_watchlist_keyboard(),
         )
         return
@@ -168,7 +155,8 @@ async def _execute_watches(chat_id: int, bot: Bot) -> None:
     if not rows:
         await bot.send_message(
             chat_id,
-            "Your watchlist is empty. Add a channel to get started:",
+            "Your watchlist is empty.\n\n"
+            "Use /watch <channel name> to add a channel you want to track.",
             reply_markup=_empty_watchlist_keyboard(),
         )
         return
