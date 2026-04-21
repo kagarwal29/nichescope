@@ -151,11 +151,94 @@ def _strip_json_fences(raw: str) -> str:
 def _parse_plan(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
+    stripped = _strip_json_fences(raw)
     try:
-        return json.loads(_strip_json_fences(raw))
-    except json.JSONDecodeError as e:
-        logger.warning("Plan JSON parse failed: %s", e)
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        # Models sometimes prefix/suffix prose; try the outermost JSON object.
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(stripped[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+        logger.warning("Plan JSON parse failed (first 120 chars): %s", stripped[:120])
         return None
+
+
+_GREETING_WORDS = frozenset(
+    {"hi", "hello", "hey", "yo", "hiya", "howdy", "sup", "greetings"}
+)
+_GREETING_TAIL = frozenset(
+    {"there", "you", "ya", "u", "all", "team", "folks", "everyone", "again", "buddy"}
+)
+_THANKS_WORDS = frozenset({"thanks", "thank", "thx", "ty", "cheers"})
+# If the user mentions YouTube-related intent, always run the planner — never short-circuit.
+_YT_INTENT_WORDS = frozenset(
+    {
+        "youtube", "yt", "channel", "channels", "video", "videos", "subscriber",
+        "subscribers", "subs", "views", "view", "upload", "uploads", "compare",
+        "vs", "watch", "digest", "creator", "creators", "shorts", "trend", "trends",
+        "niche", "stats", "sub", "vlog",
+    }
+)
+_CAPABILITIES_BLURB = (
+    "Ask about any channel by name or @handle — stats, recent videos, comparisons, "
+    "or niche ideas. For recurring competitor tracking: /watch, /digest, /watches. "
+    "Tap /start for command buttons."
+)
+
+
+def _small_talk_reply(text: str) -> str | None:
+    """Short openers (Hi, thanks) and capability questions — without stealing real YouTube queries."""
+    raw = text.strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    simple = "".join(c if c.isalnum() or c.isspace() else " " for c in lowered)
+    words = [w for w in simple.split() if w]
+    if not words:
+        return None
+
+    if _YT_INTENT_WORDS.intersection(words):
+        return None
+    if "?" in raw:
+        return None
+
+    joined = " ".join(words)
+
+    # "what can you do" / "who are you" style (exact short phrases only)
+    if joined in {
+        "what can you do",
+        "what do you do",
+        "who are you",
+        "what are you",
+    }:
+        return (
+            "I'm NicheScope — I answer questions using live YouTube Data API results.\n\n"
+            f"{_CAPABILITIES_BLURB}"
+        )
+
+    if words == ["help"] or joined in {"help me", "need help"}:
+        return f"Happy to help.\n\n{_CAPABILITIES_BLURB}"
+
+    # Thanks — keep short; avoid matching "thanks youtube"
+    if words[0] in _THANKS_WORDS and len(words) <= 3:
+        return "You're welcome! Ask anytime about channels, videos, or your watchlist."
+
+    # Greetings: only pure openers like "Hi" / "Hey there" (not "Hi compare …")
+    if (
+        len(words) <= 3
+        and any(w in _GREETING_WORDS for w in words)
+        and all(w in _GREETING_WORDS | _GREETING_TAIL for w in words)
+    ):
+        return (
+            "Hi! I'm NicheScope — your YouTube intel assistant.\n\n"
+            f"{_CAPABILITIES_BLURB}"
+        )
+
+    return None
 
 
 def _fmt(n: int) -> str:
@@ -295,6 +378,10 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, Res
         )
 
     logger.info("User message (truncated): %s", text[:200])
+
+    st = _small_talk_reply(text)
+    if st:
+        return st, _direct
 
     plan = await _plan_turn(text)
     if not plan:
