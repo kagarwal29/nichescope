@@ -257,19 +257,41 @@ async def _answer_turn(user_message: str, bundles: list[dict[str, Any]]) -> str 
     )
 
 
-async def classify_and_respond(text: str, youtube: YouTubeAPI) -> str:
-    """Conversational entry: plan with the LLM, pull YouTube data, then answer with the LLM."""
+class ResponseMeta:
+    """Metadata returned alongside the LLM answer for generating contextual suggestions."""
+    __slots__ = ("plan_type", "channels_queried", "channels_found", "had_videos")
+
+    def __init__(
+        self,
+        plan_type: str,
+        channels_queried: list[str],
+        channels_found: list[str],
+        had_videos: bool,
+    ):
+        self.plan_type = plan_type          # "direct" | "channel_lookup"
+        self.channels_queried = channels_queried
+        self.channels_found = channels_found  # actual channel titles from the API
+        self.had_videos = had_videos
+
+
+async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, ResponseMeta]:
+    """Conversational entry: plan → YouTube data → answer.
+
+    Returns (answer_text, ResponseMeta) so callers can build contextual suggestions.
+    """
+    _direct = ResponseMeta("direct", [], [], False)
 
     if not settings.genai_token:
         logger.warning("GENAI_TOKEN not set")
-        return "The bot is not configured yet. Set GENAI_TOKEN in the environment."
+        return "The bot is not configured yet. Set GENAI_TOKEN in the environment.", _direct
 
     if not settings.genai_model.strip():
         logger.warning("GENAI_MODEL not set")
         return (
             "Set GENAI_MODEL in your environment to a chat model id your Uber GenAI project "
             "is allowed to use (for example from your project's model allowlist). "
-            "Plain gpt-4 often returns 403 until your project is provisioned for that model."
+            "Plain gpt-4 often returns 403 until your project is provisioned for that model.",
+            _direct,
         )
 
     logger.info("User message (truncated): %s", text[:200])
@@ -278,7 +300,8 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> str:
     if not plan:
         return (
             "I could not interpret that request. Please ask about a YouTube channel "
-            "or video topic, and mention the channel name or @handle if you can."
+            "or video topic, and mention the channel name or @handle if you can.",
+            _direct,
         )
 
     channels = plan.get("channels_to_lookup") or []
@@ -286,41 +309,51 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> str:
     if plan.get("reply_direct"):
         dm = plan.get("direct_message")
         if dm:
-            return str(dm).strip()
+            return str(dm).strip(), _direct
         if not channels:
             return (
                 "Hi! I can help with YouTube channels and videos — stats, recent uploads, "
-                "top videos, or comparisons. Tell me which channel or @handle you care about."
+                "top videos, or comparisons. Tell me which channel or @handle you care about.",
+                _direct,
             )
-        # reply_direct was set without a message but channels were listed — fetch data
 
     if not channels:
         return (
             "Which YouTube channel or creator should I look up? "
-            "Name the channel or @handle and what you want to know."
+            "Name the channel or @handle and what you want to know.",
+            _direct,
         )
 
     if not settings.youtube_api_key:
-        return "YouTube API is not configured, so I cannot fetch live channel data."
+        return "YouTube API is not configured, so I cannot fetch live channel data.", _direct
 
     bundles: list[dict[str, Any]] = []
     sample = plan.get("video_sample_size") or 10
     want_videos = bool(plan.get("include_recent_videos"))
+    found_titles: list[str] = []
 
     for q in channels:
         ch = youtube.lookup_channel(q)
         videos: list[dict] = []
-        if ch and want_videos and ch.get("uploads_playlist_id"):
-            try:
-                videos = youtube.get_recent_videos(
-                    ch["uploads_playlist_id"],
-                    count=sample,
-                )
-            except Exception as e:
-                logger.warning("Video fetch failed for %s: %s", q, e)
+        if ch:
+            found_titles.append(ch.get("title") or q)
+            if want_videos and ch.get("uploads_playlist_id"):
+                try:
+                    videos = youtube.get_recent_videos(
+                        ch["uploads_playlist_id"],
+                        count=sample,
+                    )
+                except Exception as e:
+                    logger.warning("Video fetch failed for %s: %s", q, e)
         bundles.append(bundle_channel_data(q, ch, videos))
 
     answer = await _answer_turn(text, bundles)
+    meta = ResponseMeta(
+        plan_type="channel_lookup",
+        channels_queried=channels,
+        channels_found=found_titles,
+        had_videos=want_videos and bool(videos),
+    )
     if answer:
-        return answer.strip()
-    return _summarize_fallback(bundles)
+        return answer.strip(), meta
+    return _summarize_fallback(bundles), meta

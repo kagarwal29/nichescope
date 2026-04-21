@@ -25,6 +25,28 @@ logger = logging.getLogger(__name__)
 _youtube = YouTubeAPI()
 
 
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Onboarding — sent when a user first opens the bot or types /start."""
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "Welcome to NicheScope — your YouTube intelligence agent.\n\n"
+        "Just chat naturally. No commands needed for questions.\n\n"
+        "Things you can ask:\n"
+        "  \u2022 How many subs does MrBeast have?\n"
+        "  \u2022 Compare MKBHD and Linus Tech Tips\n"
+        "  \u2022 What are Kurzgesagt's top videos this year?\n"
+        "  \u2022 Which topics are underserved in finance YouTube?\n"
+        "  \u2022 Is Veritasium uploading consistently?\n\n"
+        "Competitor radar (tracks channels for you):\n"
+        "  \u2022 /watch <channel>  \u2014 add to watchlist\n"
+        "  \u2022 /digest  \u2014 AI pulse + 3 next moves\n"
+        "  \u2022 /watches  \u2014 your list\n"
+        "  \u2022 /unwatch N  \u2014 remove by number\n\n"
+        "Daily digest auto-sends at 8:00 UTC once you have a watchlist."
+    )
+
+
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add a competitor channel to your digest watchlist."""
     if not update.message:
@@ -64,8 +86,12 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f'Watching "{title}" for competitor digests.\n'
-        f"/watches — list · /digest — pulse now · daily ~{settings.digest_hour_utc}:00 UTC"
+        f'Watching "{title}".\n\n'
+        f"Try next:\n"
+        f"  \u2022 /digest  \u2014 get a competitor pulse right now\n"
+        f"  \u2022 /watch <another channel>  \u2014 add more to compare\n"
+        f"  \u2022 /watches  \u2014 see your full list\n\n"
+        f"Auto-digest drops daily at ~{settings.digest_hour_utc}:00 UTC."
     )
 
 
@@ -154,13 +180,19 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     body = digest_preview_header() + text
-    first = True
-    for part in telegram_chunks(body):
-        if first:
-            await update.message.reply_text(part)
-            first = False
-        else:
-            await update.message.reply_text(part)
+    parts = telegram_chunks(body)
+    for i, part in enumerate(parts):
+        await update.message.reply_text(part)
+
+    # Nudge toward strategy questions after digest
+    await update.message.reply_text(
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        "Take it further:\n"
+        "  \u2022 Where is the open lane in this niche?\n"
+        "  \u2022 What should I make next to beat them?\n"
+        "  \u2022 Which video format is winning for [channel name]?\n"
+        "  \u2022 /watch <channel>  \u2014 add another competitor"
+    )
 
 
 async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
