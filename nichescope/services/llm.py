@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from typing import Any
 
 import httpx
@@ -152,28 +153,37 @@ def _parse_plan(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
     stripped = _strip_json_fences(raw)
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        # Models sometimes prefix/suffix prose; try the outermost JSON object.
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(stripped[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-        logger.warning("Plan JSON parse failed (first 120 chars): %s", stripped[:120])
-        return None
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    logger.warning("Plan JSON parse failed (first 120 chars): %s", stripped[:120])
+    return None
 
 
 _GREETING_WORDS = frozenset(
     {"hi", "hello", "hey", "yo", "hiya", "howdy", "sup", "greetings"}
 )
 _GREETING_TAIL = frozenset(
-    {"there", "you", "ya", "u", "all", "team", "folks", "everyone", "again", "buddy"}
+    {
+        "there", "you", "ya", "u", "all", "team", "folks", "everyone", "again", "buddy",
+        "bro", "mate", "friend", "pal", "morning", "afternoon", "evening", "day", "night",
+        "good",
+    }
 )
 _THANKS_WORDS = frozenset({"thanks", "thank", "thx", "ty", "cheers"})
+# After a greeting, these suggest a real request — do not treat as small talk.
+_REQUEST_VERBS = frozenset(
+    {"can", "could", "would", "will", "show", "tell", "find", "look", "get", "give", "list", "check"}
+)
 # If the user mentions YouTube-related intent, always run the planner — never short-circuit.
 _YT_INTENT_WORDS = frozenset(
     {
@@ -189,10 +199,35 @@ _CAPABILITIES_BLURB = (
     "Tap /start for command buttons."
 )
 
+_WELCOME_REPLY = (
+    "Hi! I'm NicheScope — your YouTube intel assistant.\n\n"
+    f"{_CAPABILITIES_BLURB}"
+)
+
+
+def _normalize_chat_text(text: str) -> str:
+    """Strip ZWSP/BOM and normalize Unicode so Telegram / copy-paste variants still match."""
+    t = unicodedata.normalize("NFKC", (text or "").strip())
+    for z in ("\u200b", "\u200c", "\u200d", "\ufeff"):
+        t = t.replace(z, "")
+    return t.strip()
+
+
+def _loose_greeting_word(w: str) -> bool:
+    """Match hi/hii/hiii, hey/heyy, and dictionary greetings."""
+    w = w.lower().strip("!.?…,")
+    if w in _GREETING_WORDS:
+        return True
+    if 2 <= len(w) <= 5 and w.startswith("hi") and all(c == "h" or c == "i" for c in w):
+        return True
+    if 3 <= len(w) <= 6 and w.startswith("hey") and all(c in "hey" for c in w):
+        return True
+    return False
+
 
 def _small_talk_reply(text: str) -> str | None:
     """Short openers (Hi, thanks) and capability questions — without stealing real YouTube queries."""
-    raw = text.strip()
+    raw = _normalize_chat_text(text)
     if not raw:
         return None
     lowered = raw.lower()
@@ -227,16 +262,21 @@ def _small_talk_reply(text: str) -> str | None:
     if words[0] in _THANKS_WORDS and len(words) <= 3:
         return "You're welcome! Ask anytime about channels, videos, or your watchlist."
 
-    # Greetings: only pure openers like "Hi" / "Hey there" (not "Hi compare …")
+    # Time-of-day openers
+    if joined in {"good morning", "good afternoon", "good evening", "good day", "good night"}:
+        return _WELCOME_REPLY
+
+    # Greetings: hi/hii/hello + optional tail word from a safe list (Hi bro, Hey there)
     if (
         len(words) <= 3
-        and any(w in _GREETING_WORDS for w in words)
-        and all(w in _GREETING_WORDS | _GREETING_TAIL for w in words)
+        and _loose_greeting_word(words[0])
+        and not _REQUEST_VERBS.intersection(words[1:])
     ):
-        return (
-            "Hi! I'm NicheScope — your YouTube intel assistant.\n\n"
-            f"{_CAPABILITIES_BLURB}"
-        )
+        rest = words[1:]
+        if not rest or all(
+            w in _GREETING_TAIL or _loose_greeting_word(w) for w in rest
+        ):
+            return _WELCOME_REPLY
 
     return None
 
@@ -305,7 +345,7 @@ async def _plan_turn(user_message: str) -> dict[str, Any] | None:
         temperature=0.2,
     )
     plan = _parse_plan(raw)
-    if not plan:
+    if plan is None:
         return None
     # Normalize
     plan.setdefault("reply_direct", False)
@@ -377,6 +417,7 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, Res
             _direct,
         )
 
+    text = _normalize_chat_text(text)
     logger.info("User message (truncated): %s", text[:200])
 
     st = _small_talk_reply(text)
@@ -384,7 +425,22 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, Res
         return st, _direct
 
     plan = await _plan_turn(text)
-    if not plan:
+    if plan is None:
+        # Planner failed (invalid JSON, empty response): don't punish short chit-chat
+        st2 = _small_talk_reply(text)
+        if st2:
+            return st2, _direct
+        if len(text) <= 48 and not any(ch.isdigit() for ch in text):
+            tokens = [w for w in "".join(
+                c if c.isalnum() or c.isspace() else " " for c in text.lower()
+            ).split() if w]
+            if (
+                len(tokens) <= 4
+                and not _YT_INTENT_WORDS.intersection(tokens)
+                and not _REQUEST_VERBS.intersection(tokens)
+                and "?" not in text
+            ):
+                return _WELCOME_REPLY, _direct
         return (
             "I could not interpret that request. Please ask about a YouTube channel "
             "or video topic, and mention the channel name or @handle if you can.",
