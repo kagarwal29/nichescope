@@ -243,10 +243,10 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _execute_digest(update.effective_chat.id, context.bot)
 
 
-async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    await update.message.reply_text(
+async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
+    """Competitor radar help — used by /radar and inline c:radar chips."""
+    await bot.send_message(
+        chat_id,
         "Competitor radar\n\n"
         "/watch <name>  \u2014 add to watchlist\n"
         "/watches  \u2014 numbered list\n"
@@ -260,3 +260,9 @@ async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              InlineKeyboardButton("📋 My watchlist",     callback_data="c:watches")],
         ]),
     )
+
+
+async def cmd_watch_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_radar_help(update.effective_chat.id, context.bot)

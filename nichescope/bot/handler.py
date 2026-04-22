@@ -204,6 +204,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif cmd == "watches":
             from nichescope.bot.watch_commands import _execute_watches
             await _execute_watches(chat_id, bot)
+        elif cmd == "radar":
+            from nichescope.bot.watch_commands import _execute_radar_help
+            await _execute_radar_help(chat_id, bot)
         return
 
     # ── Free-text question ──
