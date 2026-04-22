@@ -6,6 +6,7 @@ and _execute_* coroutines usable directly by the callback handler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy import delete, select
@@ -27,6 +28,31 @@ from nichescope.services.youtube import YouTubeAPI
 logger = logging.getLogger(__name__)
 
 _youtube = YouTubeAPI()
+
+# One digest at a time per chat (double-tap / slow callback answer no longer duplicates work).
+_digest_state_lock = asyncio.Lock()
+_digest_busy_chats: set[int] = set()
+
+
+async def digest_chat_is_busy(chat_id: int) -> bool:
+    """True if a digest is in progress for this chat (for fast callback UX)."""
+    async with _digest_state_lock:
+        return chat_id in _digest_busy_chats
+
+
+def _compose_digest_display(llm_text: str) -> str:
+    """Avoid doubling titles when the model already echoes a digest-style header."""
+    raw = llm_text.strip()
+    if not raw:
+        return digest_preview_header()
+    first = raw.split("\n", 1)[0].strip().lower()
+    if (
+        first.startswith("📡")
+        or first.startswith("competitor digest")
+        or first.startswith("nichescope digest")
+    ):
+        return raw + "\n"
+    return digest_preview_header() + raw
 
 
 # ── Inline keyboards ──────────────────────────────────────────────────────────
@@ -116,31 +142,44 @@ async def _execute_watch(chat_id: int, query: str, bot: Bot) -> None:
 
 
 async def _execute_digest(chat_id: int, bot: Bot) -> None:
-    if not settings.youtube_api_key:
-        await bot.send_message(chat_id, "YouTube API key is not configured.")
-        return
+    async with _digest_state_lock:
+        if chat_id in _digest_busy_chats:
+            await bot.send_message(
+                chat_id,
+                "A digest is already generating — check your latest messages.",
+            )
+            return
+        _digest_busy_chats.add(chat_id)
 
-    text = await generate_digest_message(chat_id, _youtube)
-    if not text:
+    try:
+        if not settings.youtube_api_key:
+            await bot.send_message(chat_id, "YouTube API key is not configured.")
+            return
+
+        text = await generate_digest_message(chat_id, _youtube)
+        if not text:
+            await bot.send_message(
+                chat_id,
+                "Your watchlist is empty.\n\n"
+                "Add a channel you want to track:\n"
+                "/watch <channel name>\n\n"
+                "Example: /watch <name of a channel you care about>",
+                reply_markup=_empty_watchlist_keyboard(),
+            )
+            return
+
+        body = _compose_digest_display(text)
+        for part in telegram_chunks(body):
+            await bot.send_message(chat_id, part)
+
         await bot.send_message(
             chat_id,
-            "Your watchlist is empty.\n\n"
-            "Add a channel you want to track:\n"
-            "/watch <channel name>\n\n"
-            "Example: /watch <name of a channel you care about>",
-            reply_markup=_empty_watchlist_keyboard(),
+            "\u2500\u2500 Take it further:",
+            reply_markup=_after_digest_keyboard(),
         )
-        return
-
-    body = digest_preview_header() + text
-    for part in telegram_chunks(body):
-        await bot.send_message(chat_id, part)
-
-    await bot.send_message(
-        chat_id,
-        "\u2500\u2500 Take it further:",
-        reply_markup=_after_digest_keyboard(),
-    )
+    finally:
+        async with _digest_state_lock:
+            _digest_busy_chats.discard(chat_id)
 
 
 async def _execute_watches(chat_id: int, bot: Bot) -> None:

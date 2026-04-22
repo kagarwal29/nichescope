@@ -178,7 +178,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles taps on any inline keyboard button produced by this bot."""
     query = update.callback_query
-    await query.answer()  # clears the Telegram loading spinner
+    if not query:
+        return
 
     data = query.data or ""
     chat_id = update.effective_chat.id
@@ -186,6 +187,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # ── /watch shortcut ──
     if data.startswith("w:"):
+        await query.answer()
         channel = data[2:].strip()
         if not channel:
             await bot.send_message(chat_id, "Usage: /watch <channel name or @handle>")
@@ -199,20 +201,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("c:"):
         cmd = data[2:]
         if cmd == "digest":
-            from nichescope.bot.watch_commands import _execute_digest
+            from nichescope.bot.watch_commands import _execute_digest, digest_chat_is_busy
+            if await digest_chat_is_busy(chat_id):
+                await query.answer(text="Already on it\u2026", show_alert=False)
+                return
+            # answerCallbackQuery ASAP + short text so the client stops the loading ring quickly
+            await query.answer(text="Building digest\u2026", show_alert=False)
             await _execute_digest(chat_id, bot)
         elif cmd == "watches":
+            await query.answer(text="Loading watchlist\u2026", show_alert=False)
             from nichescope.bot.watch_commands import _execute_watches
             await _execute_watches(chat_id, bot)
         elif cmd == "radar":
+            await query.answer()
             from nichescope.bot.watch_commands import _execute_radar_help
             await _execute_radar_help(chat_id, bot)
+        else:
+            await query.answer()
         return
 
     # ── Free-text question ──
     if data.startswith("q:"):
+        await query.answer(text="On it\u2026", show_alert=False)
         text = data[2:].strip()
         if not text:
             return
         await bot.send_message(chat_id, f"\U0001f449 {text}")
         await _process_query(chat_id, text, bot)
+        return
+
+    await query.answer()
