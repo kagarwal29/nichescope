@@ -33,7 +33,7 @@ Read the user's message and output ONLY valid JSON (no markdown fences) with thi
 
 Rules:
 - Plain text only inside direct_message when used (no markdown, no * or _).
-- If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message.
+- If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message (under ~200 characters).
 - If the topic is clearly not about YouTube (creators, channels, videos, views, uploads, subscribers, etc.): reply_direct=true with a brief polite message that you only help with YouTube-related questions.
 - When the user needs stats, comparisons, recent uploads, top videos, schedules, or channel info: reply_direct=false and fill channels_to_lookup with 1–3 search strings (names or @handles) that work in YouTube search.
 - include_recent_videos=true when recent uploads, video titles, top/most-viewed lists, posting patterns, or "latest" matters; false for subscriber-only or generic stat questions where listing videos is unnecessary.
@@ -41,11 +41,18 @@ Rules:
 - If you cannot tell which channel they mean: reply_direct=true and direct_message asks them to name the channel or @handle clearly.
 """
 
-_ANSWER_SYSTEM = """You are NicheScope. Answer in a natural, conversational way using ONLY the YouTube API data provided below.
+_ANSWER_SYSTEM = """You are NicheScope. Answer in a crisp Telegram style using ONLY the YouTube API data below.
 
-If a channel lookup failed or data is missing, say so honestly. Do not invent statistics or video titles.
+Length and shape (strict):
+- Aim for at most ~900 characters total (about 8–12 short lines). Do not ramble.
+- Open with the direct answer in 1–2 tight sentences. Only then, if needed: up to 3 bullets, one line each.
+- Comparisons: one short paragraph or a few labeled lines — not an essay.
+- Strategy / "what to do next" angles: at most 3 bullets, each under 12 words, grounded only in the data shown.
+- No preamble ("Sure", "Here is", "I'd be happy"). No restating the user's question. No closing lecture.
 
-Plain text only — no markdown, asterisks, or underscores for formatting."""
+If a lookup failed or data is missing, say so in one short sentence. Do not invent statistics or video titles.
+
+Plain text only — no markdown, asterisks, or underscores."""
 
 
 def _ssl_verify():
@@ -375,8 +382,8 @@ async def _answer_turn(user_message: str, bundles: list[dict[str, Any]]) -> str 
                 "content": f"User message:\n{user_message}\n\nYouTube data (JSON):\n{payload}",
             },
         ],
-        max_tokens=1200,
-        temperature=0.55,
+        max_tokens=700,
+        temperature=0.42,
     )
 
 

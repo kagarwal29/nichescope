@@ -21,11 +21,11 @@ _DIGEST_SYSTEM = """You are NicheScope — a competitor radar for YouTube creato
 
 The user tracks the channels in the JSON below. Using ONLY that data:
 
-1) Pulse (short): What is moving — new uploads since your window, standout videos by views, obvious scale gaps vs others in the list (use only provided numbers/titles).
+1) Pulse — 2–4 short sentences max: what moved (uploads, standout titles/views, scale gaps). Use only numbers and titles from the JSON.
 
-2) Next moves: Exactly 3 bullets — concrete actions this week (cadence, format, packaging, shorts vs long, collaboration angle) grounded in what the data shows competitors doing. No generic creator advice.
+2) Next moves — exactly 3 bullets, one line each, under ~14 words per line. Concrete actions this week tied to what the data shows. No generic advice.
 
-Rules: Plain text only. No markdown. Be specific; if data is thin, say what’s missing rather than guessing. Keep under 3500 characters."""
+Rules: Plain text only. No markdown. If data is thin, one honest sentence on what’s missing. Total output under ~1100 characters — tight and scannable."""
 
 _TELEGRAM_CHUNK = 3900
 
@@ -92,8 +92,8 @@ async def generate_digest_message(chat_id: int, youtube: YouTubeAPI) -> str | No
                 "content": f"Tracked channels snapshot (JSON):\n{payload}",
             },
         ],
-        max_tokens=1800,
-        temperature=0.45,
+        max_tokens=900,
+        temperature=0.42,
     )
     if text:
         return text.strip()
