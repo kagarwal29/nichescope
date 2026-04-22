@@ -158,8 +158,13 @@ async def broadcast_daily_digests(bot: Any, youtube: YouTubeAPI) -> None:
             for part in telegram_chunks(header + body):
                 await bot.send_message(chat_id=cid, text=part)
             await asyncio.sleep(0.35)
-        except Exception:
+        except Exception as exc:
             logger.exception("Digest send failed chat_id=%s", cid)
+            try:
+                from nichescope.services.notify import notify_server_error
+                await notify_server_error(exc, f"Daily digest send chat_id={cid}")
+            except Exception:
+                logger.exception("Failed to notify admin of digest error")
 
 
 def digest_preview_header() -> str:

@@ -63,6 +63,7 @@ def _start_commands_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📡 /digest  — competitor pulse",  callback_data="c:digest")],
         [InlineKeyboardButton("📋 /watches  — my watchlist",     callback_data="c:watches")],
         [InlineKeyboardButton("🛰️ /radar  — all commands",      callback_data="c:radar")],
+        [InlineKeyboardButton("📧 Support / feedback",           callback_data="c:support_usage")],
     ])
 
 def _after_watch_keyboard(title: str) -> InlineKeyboardMarkup:
@@ -103,6 +104,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Your YouTube intelligence agent.\n\n"
         "Just type any YouTube channel name or ask a question \u2014 "
         "I'll look up real data and answer.\n\n"
+        "Help: /support (email us)  \u00b7  /privacy\n\n"
         "Or jump straight to a command:",
         reply_markup=_start_commands_keyboard(),
     )
@@ -349,7 +351,9 @@ async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
         "/digest  \u2014 AI pulse now (on demand)\n"
         "/digest_off  \u2014 stop scheduled daily digest for you\n"
         "/digest_on  \u2014 turn scheduled daily digest back on\n"
-        "/digest_status  \u2014 your digest settings\n\n"
+        "/digest_status  \u2014 your digest settings\n"
+        "/support  \u2014 email the team (see usage)\n"
+        "/privacy  \u2014 what we store\n\n"
         f"Server digest scheduler: ~{settings.digest_hour_utc}:00 UTC "
         f"({'on' if settings.digest_enabled else 'off'} for all chats)\n\n"
         "You can also say e.g. \"stop daily digest\" or \"resume daily digest\" in chat.\n\n"
@@ -362,6 +366,7 @@ async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
                 InlineKeyboardButton("🔔 Resume",           callback_data="c:digest_on"),
             ],
             [InlineKeyboardButton("⚙️ Digest status",     callback_data="c:digest_status")],
+            [InlineKeyboardButton("📧 Support / feedback", callback_data="c:support_usage")],
         ]),
     )
 

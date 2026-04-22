@@ -12,6 +12,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nichescope.config import settings
 
@@ -20,6 +23,30 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _init_sentry() -> None:
+    dsn = (settings.sentry_dsn or "").strip()
+    if not dsn:
+        return
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=settings.app_env,
+        traces_sample_rate=max(0.0, min(1.0, float(settings.sentry_traces_sample_rate))),
+        send_default_pii=False,
+        integrations=[
+            StarletteIntegration(),
+            FastApiIntegration(),
+        ],
+    )
+    logger.info("Sentry initialized (environment=%s)", settings.app_env)
+
+
+_init_sentry()
 
 # Shared bot Application instance — set during lifespan, used by /webhook route.
 _bot_app: Any = None
@@ -49,6 +76,14 @@ async def lifespan(app: FastAPI):
                 "Telegram bot failed to start in %s mode: %s: %s",
                 mode, type(exc).__name__, exc,
             )
+            if (settings.sentry_dsn or "").strip():
+                import sentry_sdk
+                sentry_sdk.capture_exception(exc)
+            try:
+                from nichescope.services.notify import notify_server_error
+                await notify_server_error(exc, f"Telegram bot startup ({mode})")
+            except Exception:
+                logger.exception("Failed to notify admin of bot startup error")
             if not use_webhook:
                 logger.warning(
                     "Polling requires outbound access to api.telegram.org. "
@@ -77,6 +112,32 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, RequestValidationError):
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    if isinstance(exc, StarletteHTTPException):
+        hdrs = dict(exc.headers) if exc.headers else None
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=hdrs,
+        )
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    if (settings.sentry_dsn or "").strip():
+        import sentry_sdk
+        sentry_sdk.capture_exception(exc)
+    try:
+        from nichescope.services.notify import notify_server_error
+        await notify_server_error(exc, f"{request.method} {request.url.path}")
+    except Exception:
+        logger.exception("Failed to notify admin of HTTP handler error")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 @app.get("/debug/webhook")
@@ -141,6 +202,14 @@ async def telegram_webhook(request: Request):
         await process_webhook_update(_bot_app, data)
     except Exception as exc:
         logger.exception("Error processing webhook update: %s", exc)
+        if (settings.sentry_dsn or "").strip():
+            import sentry_sdk
+            sentry_sdk.capture_exception(exc)
+        try:
+            from nichescope.services.notify import notify_server_error
+            await notify_server_error(exc, "Telegram webhook process_update")
+        except Exception:
+            logger.exception("Failed to notify admin of webhook error")
         # Return 200 to prevent Telegram retrying a broken update.
 
     return {"ok": True}

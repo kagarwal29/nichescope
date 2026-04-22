@@ -17,6 +17,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, JobQueue, MessageHandler, filters
 
 from nichescope.bot.handler import handle_callback, handle_message
+from nichescope.bot.support_commands import cmd_privacy, cmd_support
 from nichescope.bot.watch_commands import (
     cmd_digest,
     cmd_digest_off,
@@ -93,6 +94,8 @@ def create_bot_app():
     app = builder.build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("support", cmd_support))
+    app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("watches", cmd_watches))

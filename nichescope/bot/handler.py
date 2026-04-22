@@ -16,6 +16,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from nichescope.config import settings
 from nichescope.services.guardrails import check_message
 from nichescope.services.llm import ResponseMeta, classify_and_respond
 from nichescope.services.youtube import YouTubeAPI
@@ -29,7 +30,7 @@ _youtube = YouTubeAPI()
 # callback_data prefixes:
 #   q:<text>  — run as a free-text question
 #   w:<name>  — run /watch <name>
-#   c:<cmd>   — digest | watches | radar | digest_off | digest_on | digest_status
+#   c:<cmd>   — digest | watches | radar | digest_* | support_usage
 
 # Shown when there is no channel context yet — guide toward commands
 _COMMAND_CHIPS = [
@@ -143,8 +144,20 @@ async def _process_query(chat_id: int, text: str, bot) -> None:
                 reply_markup=_make_keyboard(chips),
             )
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Query error for chat_id=%d", chat_id)
+        try:
+            if (settings.sentry_dsn or "").strip():
+                import sentry_sdk
+                sentry_sdk.capture_exception(exc)
+            from nichescope.services.notify import notify_server_error
+            await notify_server_error(
+                exc,
+                f"Telegram message pipeline chat_id={chat_id}",
+                extra=f"User text (truncated): {text[:500]!r}",
+            )
+        except Exception:
+            logger.exception("Failed to notify admin of query error")
         fallback = (
             "\U0001f605 Something went wrong. Try rephrasing!\n\n"
             "You can ask things like:\n"
@@ -232,6 +245,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer()
             from nichescope.bot.watch_commands import _execute_digest_status
             await _execute_digest_status(chat_id, bot)
+        elif cmd == "support_usage":
+            await query.answer()
+            from nichescope.bot.support_commands import send_support_hint
+            await send_support_hint(chat_id, bot)
         else:
             await query.answer()
         return

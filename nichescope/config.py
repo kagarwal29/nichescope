@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     digest_enabled: bool = True
     digest_hour_utc: int = 9
 
+    # Ops: admin alerts & error tracking
+    admin_email: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+    smtp_ssl: bool = False
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.1
+
     @model_validator(mode="after")
     def legacy_openai_api_key_as_genai_token(self):
         """Support older deployments that still set OPENAI_API_KEY."""
@@ -65,6 +77,12 @@ class Settings(BaseSettings):
             legacy = os.getenv("OPENAI_API_KEY", "").strip()
             if legacy:
                 self.genai_token = legacy
+        return self
+
+    @model_validator(mode="after")
+    def default_smtp_from(self):
+        if not self.smtp_from.strip() and self.smtp_user.strip():
+            self.smtp_from = self.smtp_user.strip()
         return self
 
     @model_validator(mode="after")
