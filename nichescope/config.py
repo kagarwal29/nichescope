@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import model_validator
@@ -64,6 +65,21 @@ class Settings(BaseSettings):
             legacy = os.getenv("OPENAI_API_KEY", "").strip()
             if legacy:
                 self.genai_token = legacy
+        return self
+
+    @model_validator(mode="after")
+    def normalize_telegram_webhook_url(self):
+        """If TELEGRAM_WEBHOOK_URL is a bare origin, default the path to /webhook (FastAPI route)."""
+        raw = (self.telegram_webhook_url or "").strip()
+        if not raw:
+            self.telegram_webhook_url = ""
+            return self
+        u = raw.rstrip("/")
+        path = urlparse(u).path or ""
+        if path in ("", "/"):
+            self.telegram_webhook_url = f"{u}/webhook"
+        else:
+            self.telegram_webhook_url = u
         return self
 
     def __init__(self, **data):
