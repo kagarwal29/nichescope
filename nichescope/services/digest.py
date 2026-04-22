@@ -7,10 +7,10 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from nichescope.config import settings
-from nichescope.db.models import WatchChannel
+from nichescope.db.models import ChatPreferences, WatchChannel
 from nichescope.db.session import get_session
 from nichescope.services.llm import bundle_channel_data, chat_completion
 from nichescope.services.youtube import YouTubeAPI
@@ -121,6 +121,23 @@ async def distinct_watch_chat_ids() -> list[int]:
         return [int(x) for x in result.scalars().all()]
 
 
+async def chat_ids_eligible_for_daily_digest() -> list[int]:
+    """Chats with ≥1 watch that have not opted out of the scheduled digest."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(WatchChannel.chat_id)
+            .distinct()
+            .outerjoin(ChatPreferences, ChatPreferences.chat_id == WatchChannel.chat_id)
+            .where(
+                or_(
+                    ChatPreferences.chat_id.is_(None),
+                    ChatPreferences.daily_digest_enabled.is_(True),
+                ),
+            ),
+        )
+        return [int(x) for x in result.scalars().all()]
+
+
 async def broadcast_daily_digests(bot: Any, youtube: YouTubeAPI) -> None:
     """Called by scheduler; sends digest to every chat with ≥1 watch."""
     if not settings.digest_enabled:
@@ -129,8 +146,8 @@ async def broadcast_daily_digests(bot: Any, youtube: YouTubeAPI) -> None:
         logger.warning("Skipping digest broadcast: no YouTube API key")
         return
 
-    chat_ids = await distinct_watch_chat_ids()
-    logger.info("Daily digest: %d chats with watches", len(chat_ids))
+    chat_ids = await chat_ids_eligible_for_daily_digest()
+    logger.info("Daily digest: %d chats eligible (watches + not opted out)", len(chat_ids))
 
     for cid in chat_ids:
         try:

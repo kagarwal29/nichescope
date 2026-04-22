@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class ChatPreferences(Base):
+    """Per-chat bot settings (e.g. opt out of scheduled digest)."""
+
+    __tablename__ = "chat_preferences"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    daily_digest_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class WatchChannel(Base):

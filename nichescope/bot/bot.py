@@ -19,6 +19,9 @@ from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandle
 from nichescope.bot.handler import handle_callback, handle_message
 from nichescope.bot.watch_commands import (
     cmd_digest,
+    cmd_digest_off,
+    cmd_digest_on,
+    cmd_digest_status,
     cmd_start,
     cmd_unwatch,
     cmd_watch,
@@ -94,6 +97,9 @@ def create_bot_app():
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("watches", cmd_watches))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("digest_off", cmd_digest_off))
+    app.add_handler(CommandHandler("digest_on", cmd_digest_on))
+    app.add_handler(CommandHandler("digest_status", cmd_digest_status))
     app.add_handler(CommandHandler("radar", cmd_watch_help))
 
     register_digest_scheduler(app)

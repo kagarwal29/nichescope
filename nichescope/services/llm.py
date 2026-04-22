@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 _http: httpx.AsyncClient | None = None
 
-_PLAN_SYSTEM = """You are NicheScope, a Telegram assistant focused on YouTube creators and videos.
+_APP_ACTIONS = frozenset({"digest_off", "digest_on", "digest_status"})
+
+_PLAN_SYSTEM = """You are NicheScope, a Telegram assistant for YouTube creator intel AND for this bot's own settings.
 
 Read the user's message and output ONLY valid JSON (no markdown fences) with this exact shape:
 {
@@ -28,17 +30,24 @@ Read the user's message and output ONLY valid JSON (no markdown fences) with thi
   "direct_message": string | null,
   "channels_to_lookup": string[],
   "include_recent_videos": boolean,
-  "video_sample_size": number
+  "video_sample_size": number,
+  "app_action": null | "digest_off" | "digest_on" | "digest_status"
 }
 
 Rules:
 - Plain text only inside direct_message when used (no markdown, no * or _).
-- If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message (under ~200 characters).
-- If the topic is clearly not about YouTube (creators, channels, videos, views, uploads, subscribers, etc.): reply_direct=true with a brief polite message that you only help with YouTube-related questions.
-- When the user needs stats, comparisons, recent uploads, top videos, schedules, or channel info: reply_direct=false and fill channels_to_lookup with 1–3 search strings (names or @handles) that work in YouTube search.
+- app_action (NicheScope app — NOT YouTube API):
+  - digest_off: user wants to stop/pause/remove/cancel the scheduled daily competitor digest, automated digest, digest notifications, or "don't message me daily".
+  - digest_on: user wants to turn daily/scheduled digest back on, resume automation, re-enable digest notifications.
+  - digest_status: user asks whether daily digest is on, how to change digest, or bot notification/digest settings for NicheScope.
+  - Otherwise app_action=null.
+- When app_action is non-null: set channels_to_lookup=[], include_recent_videos=false, video_sample_size=0, reply_direct=false (the app will handle the reply).
+- If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message (under ~200 characters), app_action=null.
+- If the topic is unrelated to both YouTube creator data AND this bot's settings: reply_direct=true with a brief polite message, app_action=null.
+- When the user needs stats, comparisons, recent uploads, top videos, schedules, or channel info: reply_direct=false, app_action=null, fill channels_to_lookup with 1–3 search strings (names or @handles) that work in YouTube search.
 - include_recent_videos=true when recent uploads, video titles, top/most-viewed lists, posting patterns, or "latest" matters; false for subscriber-only or generic stat questions where listing videos is unnecessary.
 - video_sample_size: integer 5–15 when include_recent_videos is true, else use 0.
-- If you cannot tell which channel they mean: reply_direct=true and direct_message asks them to name the channel or @handle clearly.
+- If you cannot tell which channel they mean: reply_direct=true and direct_message asks them to name the channel or @handle clearly, app_action=null.
 """
 
 _ANSWER_SYSTEM = """You are NicheScope. Answer in a crisp Telegram style using ONLY the YouTube API data below.
@@ -360,6 +369,7 @@ async def _plan_turn(user_message: str) -> dict[str, Any] | None:
     plan.setdefault("channels_to_lookup", [])
     plan.setdefault("include_recent_videos", False)
     plan.setdefault("video_sample_size", 10)
+    plan.setdefault("app_action", None)
     if not isinstance(plan["channels_to_lookup"], list):
         plan["channels_to_lookup"] = []
     plan["channels_to_lookup"] = [
@@ -367,7 +377,83 @@ async def _plan_turn(user_message: str) -> dict[str, Any] | None:
     ]
     vs = int(plan.get("video_sample_size") or 0)
     plan["video_sample_size"] = max(5, min(15, vs)) if plan["include_recent_videos"] else 0
+    raw_aa = plan.get("app_action")
+    if raw_aa is None or str(raw_aa).strip().lower() in ("null", "none", ""):
+        plan["app_action"] = None
+    else:
+        aa = str(raw_aa).strip().lower()
+        plan["app_action"] = aa if aa in _APP_ACTIONS else None
+    if plan["app_action"] in _APP_ACTIONS:
+        plan["channels_to_lookup"] = []
+        plan["reply_direct"] = False
+        plan["include_recent_videos"] = False
+        plan["video_sample_size"] = 0
     return plan
+
+
+def _heuristic_app_action(text: str) -> str | None:
+    """Backup when the planner misses obvious digest-setting phrases."""
+    t = _normalize_chat_text(text).lower()
+    if not t:
+        return None
+    off = (
+        "remove daily digest",
+        "stop daily digest",
+        "turn off daily digest",
+        "disable daily digest",
+        "cancel daily digest",
+        "no more daily digest",
+        "pause daily digest",
+        "stop scheduled digest",
+        "turn off scheduled digest",
+        "stop digest notifications",
+        "disable digest notifications",
+        "don't send daily digest",
+        "dont send daily digest",
+        "unsubscribe from digest",
+    )
+    on = (
+        "resume daily digest",
+        "turn on daily digest",
+        "enable daily digest",
+        "start daily digest",
+        "turn daily digest back on",
+        "digest back on",
+        "reenable daily digest",
+        "re-enable daily digest",
+    )
+    status = (
+        "digest status",
+        "daily digest status",
+        "is daily digest on",
+        "digest settings",
+        "notification settings",
+    )
+    for p in off:
+        if p in t:
+            return "digest_off"
+    for p in on:
+        if p in t:
+            return "digest_on"
+    for p in status:
+        if p in t:
+            return "digest_status"
+    return None
+
+
+async def _apply_app_action(chat_id: int, action: str) -> str:
+    from nichescope.services.chat_prefs import (
+        apply_daily_digest_toggle,
+        daily_digest_status_message,
+    )
+
+    if action == "digest_off":
+        return await apply_daily_digest_toggle(chat_id, False)
+    if action == "digest_on":
+        return await apply_daily_digest_toggle(chat_id, True)
+    if action == "digest_status":
+        return await daily_digest_status_message(chat_id)
+    return "Unknown action."
 
 
 async def _answer_turn(user_message: str, bundles: list[dict[str, Any]]) -> str | None:
@@ -404,9 +490,15 @@ class ResponseMeta:
         self.had_videos = had_videos
 
 
-async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, ResponseMeta]:
+async def classify_and_respond(
+    text: str,
+    youtube: YouTubeAPI,
+    *,
+    chat_id: int | None = None,
+) -> tuple[str, ResponseMeta]:
     """Conversational entry: plan → YouTube data → answer.
 
+    chat_id is required for in-bot settings (e.g. digest on/off).
     Returns (answer_text, ResponseMeta) so callers can build contextual suggestions.
     """
     _direct = ResponseMeta("direct", [], [], False)
@@ -455,6 +547,18 @@ async def classify_and_respond(text: str, youtube: YouTubeAPI) -> tuple[str, Res
         )
 
     channels = plan.get("channels_to_lookup") or []
+
+    aa = plan.get("app_action")
+    if aa not in _APP_ACTIONS:
+        aa = _heuristic_app_action(text)
+    if aa in _APP_ACTIONS:
+        if chat_id is None:
+            return (
+                "Open this chat in Telegram and try again, or use /digest_off and /digest_on.",
+                _direct,
+            )
+        msg = await _apply_app_action(chat_id, aa)
+        return msg, _direct
 
     if plan.get("reply_direct"):
         dm = plan.get("direct_message")

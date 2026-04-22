@@ -29,7 +29,7 @@ _youtube = YouTubeAPI()
 # callback_data prefixes:
 #   q:<text>  — run as a free-text question
 #   w:<name>  — run /watch <name>
-#   c:<cmd>   — run a slash command (digest | watches | radar)
+#   c:<cmd>   — digest | watches | radar | digest_off | digest_on | digest_status
 
 # Shown when there is no channel context yet — guide toward commands
 _COMMAND_CHIPS = [
@@ -123,7 +123,11 @@ async def _process_query(chat_id: int, text: str, bot) -> None:
     try:
         thinking = await bot.send_message(chat_id, "\U0001f914")
 
-        answer, meta = await classify_and_respond(result.sanitized_text, _youtube)
+        answer, meta = await classify_and_respond(
+            result.sanitized_text,
+            _youtube,
+            chat_id=chat_id,
+        )
 
         await bot.edit_message_text(
             chat_id=chat_id,
@@ -216,6 +220,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer()
             from nichescope.bot.watch_commands import _execute_radar_help
             await _execute_radar_help(chat_id, bot)
+        elif cmd == "digest_off":
+            await query.answer(text="Auto-digest off", show_alert=False)
+            from nichescope.bot.watch_commands import _execute_digest_auto_toggle
+            await _execute_digest_auto_toggle(chat_id, bot, False)
+        elif cmd == "digest_on":
+            await query.answer(text="Auto-digest on", show_alert=False)
+            from nichescope.bot.watch_commands import _execute_digest_auto_toggle
+            await _execute_digest_auto_toggle(chat_id, bot, True)
+        elif cmd == "digest_status":
+            await query.answer()
+            from nichescope.bot.watch_commands import _execute_digest_status
+            await _execute_digest_status(chat_id, bot)
         else:
             await query.answer()
         return

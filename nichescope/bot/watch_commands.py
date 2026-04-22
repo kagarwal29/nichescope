@@ -172,9 +172,14 @@ async def _execute_digest(chat_id: int, bot: Bot) -> None:
         for part in telegram_chunks(body):
             await bot.send_message(chat_id, part)
 
+        from nichescope.services.chat_prefs import is_daily_digest_enabled
+        auto_on = await is_daily_digest_enabled(chat_id)
         await bot.send_message(
             chat_id,
-            "\u2500\u2500 Take it further:",
+            "\u2500\u2500 Take it further:\n"
+            f"Your scheduled auto-digest: {'on' if auto_on else 'off'} "
+            f"(~{settings.digest_hour_utc}:00 UTC). "
+            "/digest_off  /digest_on  /digest_status",
             reply_markup=_after_digest_keyboard(),
         )
     finally:
@@ -203,13 +208,23 @@ async def _execute_watches(chat_id: int, bot: Bot) -> None:
     lines = ["Your competitor watchlist (use /unwatch N to remove):\n"]
     for i, w in enumerate(rows, start=1):
         lines.append(f"{i}. {w.channel_title or w.youtube_channel_id}")
-    lines.append(f"\nDaily digest: {settings.digest_hour_utc}:00 UTC  ({'on' if settings.digest_enabled else 'off'})")
+    from nichescope.services.chat_prefs import is_daily_digest_enabled
+    auto_on = await is_daily_digest_enabled(chat_id)
+    lines.append(
+        f"\nServer digest scheduler: {'on' if settings.digest_enabled else 'off'}  "
+        f"(~{settings.digest_hour_utc}:00 UTC)"
+    )
+    lines.append(f"Your auto-digest: {'on' if auto_on else 'off'}  (/digest_off /digest_on)")
 
     await bot.send_message(
         chat_id,
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 Digest now", callback_data="c:digest")],
+            [
+                InlineKeyboardButton("🔕 Pause auto-digest", callback_data="c:digest_off"),
+                InlineKeyboardButton("🔔 Resume", callback_data="c:digest_on"),
+            ],
         ]),
     )
 
@@ -282,6 +297,47 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _execute_digest(update.effective_chat.id, context.bot)
 
 
+async def _execute_digest_auto_toggle(chat_id: int, bot: Bot, enabled: bool) -> None:
+    from nichescope.services.chat_prefs import apply_daily_digest_toggle
+
+    msg = await apply_daily_digest_toggle(chat_id, enabled)
+    await bot.send_message(chat_id, msg)
+
+
+async def _execute_digest_status(chat_id: int, bot: Bot) -> None:
+    from nichescope.services.chat_prefs import daily_digest_status_message
+
+    msg = await daily_digest_status_message(chat_id)
+    await bot.send_message(
+        chat_id,
+        msg,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔕 Pause auto-digest", callback_data="c:digest_off"),
+                InlineKeyboardButton("🔔 Resume", callback_data="c:digest_on"),
+            ],
+        ]),
+    )
+
+
+async def cmd_digest_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_digest_auto_toggle(update.effective_chat.id, context.bot, False)
+
+
+async def cmd_digest_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_digest_auto_toggle(update.effective_chat.id, context.bot, True)
+
+
+async def cmd_digest_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await _execute_digest_status(update.effective_chat.id, context.bot)
+
+
 async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
     """Competitor radar help — used by /radar and inline c:radar chips."""
     await bot.send_message(
@@ -290,13 +346,22 @@ async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
         "/watch <name>  \u2014 add to watchlist\n"
         "/watches  \u2014 numbered list\n"
         "/unwatch N  \u2014 remove by number\n"
-        "/digest  \u2014 AI pulse + 3 next moves\n\n"
-        f"Daily digest: ~{settings.digest_hour_utc}:00 UTC "
-        f"({'enabled' if settings.digest_enabled else 'disabled'})\n\n"
-        "For anything else — just ask in chat.",
+        "/digest  \u2014 AI pulse now (on demand)\n"
+        "/digest_off  \u2014 stop scheduled daily digest for you\n"
+        "/digest_on  \u2014 turn scheduled daily digest back on\n"
+        "/digest_status  \u2014 your digest settings\n\n"
+        f"Server digest scheduler: ~{settings.digest_hour_utc}:00 UTC "
+        f"({'on' if settings.digest_enabled else 'off'} for all chats)\n\n"
+        "You can also say e.g. \"stop daily digest\" or \"resume daily digest\" in chat.\n\n"
+        "For YouTube questions — just ask.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 Digest now",       callback_data="c:digest"),
              InlineKeyboardButton("📋 My watchlist",     callback_data="c:watches")],
+            [
+                InlineKeyboardButton("🔕 Pause auto-digest", callback_data="c:digest_off"),
+                InlineKeyboardButton("🔔 Resume",           callback_data="c:digest_on"),
+            ],
+            [InlineKeyboardButton("⚙️ Digest status",     callback_data="c:digest_status")],
         ]),
     )
 
