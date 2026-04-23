@@ -34,7 +34,7 @@ _youtube = YouTubeAPI()
 
 # Shown when there is no channel context yet — guide toward commands
 _COMMAND_CHIPS = [
-    ("📡 /digest  — competitor pulse",  "c:digest"),
+    ("📡 /digest  — channel pulse",  "c:digest"),
     ("📋 /watches  — my watchlist",     "c:watches"),
     ("🛰️ /radar  — all commands",      "c:radar"),
 ]
@@ -161,9 +161,9 @@ async def _process_query(chat_id: int, text: str, bot) -> None:
         fallback = (
             "\U0001f605 Something went wrong. Try rephrasing!\n\n"
             "You can ask things like:\n"
-            "\u2022 Stats or recent videos for any channel you name\n"
-            "\u2022 Compare two channels\n"
-            "\u2022 What topics are underserved in a niche?\n\n"
+            "\u2022 Stats or recent videos for your channel or anyone you name\n"
+            "\u2022 Compare channels or brainstorm growth / diversification ideas\n"
+            "\u2022 Niche gaps or what to try next\n\n"
             "Or use /radar to see all available commands."
         )
         if thinking:

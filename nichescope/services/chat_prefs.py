@@ -30,7 +30,7 @@ def _digest_toggle_reply(enabled: bool) -> str:
     if enabled:
         body = (
             f"Daily auto-digest is ON for you (~{settings.digest_hour_utc}:00 UTC). "
-            "You will get the scheduled competitor pulse if you have channels on your watchlist."
+            "You will get the scheduled channel pulse if you have channels on your watchlist."
         )
     else:
         body = (

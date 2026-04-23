@@ -1,34 +1,34 @@
 # NicheScope — beta invite (one pager)
 
 **What it is**  
-NicheScope is a **Telegram bot** that acts like a lightweight **YouTube intel copilot**: ask in plain English about channels, videos, or strategy; answers are grounded in **live YouTube Data API** results (not stale screenshots). Built for creators who want a **quick pulse** without living inside YouTube Studio.
+NicheScope is a **Telegram bot** that acts as a **YouTube copilot**: ask in plain English about **any channel** (including **yours**) — stats, what’s working, comparisons, **growth**, **diversification**, or a quick **brainstorm** — with answers **grounded in live YouTube Data API** results when you name a channel or @handle.
 
 **Who it’s for**  
-YouTube creators who **track competitors**, test formats, and care about **what’s moving in their niche** — especially on mobile between shoots.
+Creators who want **intel + ideas on the go**: competitor pulse, **their own** packaging and format experiments, and light **jam sessions** without living inside YouTube Studio.
 
 **What you can do in chat**
 
-- Ask anything YouTube-related (stats, recent uploads, comparisons, “what’s working,” niche gaps).
-- **`/watch`** — add channels to a **personal watchlist**.
-- **`/digest`** — get an **AI competitor pulse** + a few **concrete next moves** from current data.
-- **Scheduled digest** — optional daily summary (~UTC time set by the operator); you can **turn it off** anytime (`/digest_off` or “stop daily digest”).
-- **`/support your@email.com …`** — sends feedback straight to the team (Telegram doesn’t share your email; you type it once in the command).
+- **Your channel or anyone else’s** — questions, stats, recent uploads, “what should I try,” niche angles.
+- **`/watch`** — track channels on a **personal list** (often competitors; can be inspiration too).
+- **`/digest`** — **AI pulse** on that list + a few **concrete next moves** (can inform your positioning, not only “vs them”).
+- **Scheduled digest** — optional daily summary; **off** anytime (`/digest_off` or “stop daily digest”).
+- **`/support your@email.com …`** — email the team (you type your email; Telegram doesn’t provide it).
 
 **Privacy (short)**  
-We process **this chat**, your **Telegram id** (to store watchlist & preferences), and **YouTube API data** you trigger. Full summary: **`/privacy`** in the bot.
+We process **this chat**, your **Telegram id**, and **YouTube API data** you trigger. **`/privacy`** in the bot.
 
 **What we need from beta testers**
 
-- **Break it** — weird questions, edge cases, wrong channels.
-- **Tell us what’s missing** — alerts, scoring, title ideas, etc.
-- **One line of permission** — OK to quote anonymized feedback later (optional).
+- **Break it** — edge cases, vague asks, wrong @handles.
+- **Tell us what’s missing** — alerts, scoring, workflows, etc.
+- **Optional** — OK to quote anonymized feedback later.
 
 **How to start**  
-Open **`https://t.me/YOUR_BOT_USERNAME`** (replace with the real handle) → **Start** → try a question about *your* niche or add one competitor with **`/watch`**.
+Open **`https://t.me/YOUR_BOT_USERNAME`** → **Start** → try a question about **your** channel or add channels with **`/watch`**.
 
 **Operator contact**  
-Support & bugs: **`/support you@email.com your message`** inside Telegram.
+**`/support you@email.com your message`** in Telegram.
 
 ---
 
-*Early access — expect rough edges; we’re iterating fast.*
+*Early access — rough edges expected; we iterate fast.*

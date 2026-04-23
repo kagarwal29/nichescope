@@ -60,7 +60,7 @@ def _compose_digest_display(llm_text: str) -> str:
 def _start_commands_keyboard() -> InlineKeyboardMarkup:
     """Commands shown on /start — no assumed channels."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📡 /digest  — competitor pulse",  callback_data="c:digest")],
+        [InlineKeyboardButton("📡 /digest  — channel pulse",  callback_data="c:digest")],
         [InlineKeyboardButton("📋 /watches  — my watchlist",     callback_data="c:watches")],
         [InlineKeyboardButton("🛰️ /radar  — all commands",      callback_data="c:radar")],
         [InlineKeyboardButton("📧 Support / feedback",           callback_data="c:support_usage")],
@@ -69,7 +69,7 @@ def _start_commands_keyboard() -> InlineKeyboardMarkup:
 def _after_watch_keyboard(title: str) -> InlineKeyboardMarkup:
     """Chips shown right after /watch succeeds."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📡 Get competitor pulse now", callback_data="c:digest")],
+        [InlineKeyboardButton("📡 Get channel pulse now", callback_data="c:digest")],
         [InlineKeyboardButton("📋 See my watchlist",         callback_data="c:watches")],
         [InlineKeyboardButton("🕳️ Find niche gaps",         callback_data="q:What niche gaps exist in this space?")],
     ])
@@ -101,10 +101,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         "Welcome to NicheScope \U0001f52d\n\n"
-        "Your YouTube intelligence agent.\n\n"
-        "Just type any YouTube channel name or ask a question \u2014 "
-        "I'll look up real data and answer.\n\n"
-        "Help: /support (email us)  \u00b7  /privacy\n\n"
+        "Your YouTube copilot: competitor intel, your own channel, growth, diversification, "
+        "or a quick brainstorm \u2014 all grounded in live data when you name a channel or @handle.\n\n"
+        "Help: /support  \u00b7  /privacy\n\n"
         "Or jump straight to a command:",
         reply_markup=_start_commands_keyboard(),
     )
@@ -207,7 +206,7 @@ async def _execute_watches(chat_id: int, bot: Bot) -> None:
         )
         return
 
-    lines = ["Your competitor watchlist (use /unwatch N to remove):\n"]
+    lines = ["Your watchlist (use /unwatch N to remove):\n"]
     for i, w in enumerate(rows, start=1):
         lines.append(f"{i}. {w.channel_title or w.youtube_channel_id}")
     from nichescope.services.chat_prefs import is_daily_digest_enabled
@@ -344,7 +343,7 @@ async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
     """Competitor radar help — used by /radar and inline c:radar chips."""
     await bot.send_message(
         chat_id,
-        "Competitor radar\n\n"
+        "NicheScope radar\n\n"
         "/watch <name>  \u2014 add to watchlist\n"
         "/watches  \u2014 numbered list\n"
         "/unwatch N  \u2014 remove by number\n"
@@ -357,7 +356,7 @@ async def _execute_radar_help(chat_id: int, bot: Bot) -> None:
         f"Server digest scheduler: ~{settings.digest_hour_utc}:00 UTC "
         f"({'on' if settings.digest_enabled else 'off'} for all chats)\n\n"
         "You can also say e.g. \"stop daily digest\" or \"resume daily digest\" in chat.\n\n"
-        "For YouTube questions — just ask.",
+        "For any channel — yours or others — ask stats, compare, or brainstorm in chat.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📡 Digest now",       callback_data="c:digest"),
              InlineKeyboardButton("📋 My watchlist",     callback_data="c:watches")],

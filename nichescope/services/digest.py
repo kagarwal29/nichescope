@@ -1,4 +1,4 @@
-"""Competitor digest: watched channels + GenAI-grounded pulse and next moves."""
+"""Watchlist digest: tracked channels + GenAI-grounded pulse and next moves."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from nichescope.services.youtube import YouTubeAPI
 
 logger = logging.getLogger(__name__)
 
-_DIGEST_SYSTEM = """You are NicheScope — a competitor radar for YouTube creators.
+_DIGEST_SYSTEM = """You are NicheScope — a pulse on the channels this user tracks on YouTube (often competitors, sometimes inspiration for their own channel).
 
 The user tracks the channels in the JSON below. Using ONLY that data:
 
 1) Pulse — 2–4 short sentences max: what moved (uploads, standout titles/views, scale gaps). Use only numbers and titles from the JSON.
 
-2) Next moves — exactly 3 bullets, one line each, under ~14 words per line. Concrete actions this week tied to what the data shows. No generic advice.
+2) Next moves — exactly 3 bullets, one line each, under ~14 words per line. Concrete actions tied to what the data shows — can include ideas for the reader’s own channel (positioning, format, cadence) when it follows from the data. No generic fluff.
 
 Rules: Plain text only. No markdown. If data is thin, one honest sentence on what’s missing. Total output under ~1100 characters — tight and scannable."""
 
@@ -154,7 +154,7 @@ async def broadcast_daily_digests(bot: Any, youtube: YouTubeAPI) -> None:
             body = await generate_digest_message(cid, youtube)
             if not body:
                 continue
-            header = "📡 Daily competitor digest\n\n"
+            header = "📡 Daily watchlist digest\n\n"
             for part in telegram_chunks(header + body):
                 await bot.send_message(chat_id=cid, text=part)
             await asyncio.sleep(0.35)

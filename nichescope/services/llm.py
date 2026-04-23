@@ -1,6 +1,7 @@
 """Conversational YouTube assistant via GenAI + live YouTube Data API.
 
 Flow: plan (JSON) → fetch channel/video data → answer with grounded context.
+Supports competitor intel, the user’s own channel, growth, diversification, and brainstorm/jam — not only “vs competitors.”
 No regex-based routing; no slash-command logic here.
 """
 
@@ -22,7 +23,7 @@ _http: httpx.AsyncClient | None = None
 
 _APP_ACTIONS = frozenset({"digest_off", "digest_on", "digest_status"})
 
-_PLAN_SYSTEM = """You are NicheScope, a Telegram assistant for YouTube creator intel AND for this bot's own settings.
+_PLAN_SYSTEM = """You are NicheScope, a Telegram assistant for YouTube creators: competitor intel, YOUR OWN channel, growth, diversification, format ideas, and casual brainstorm/jam — all grounded in live channel/video data when a channel is in scope.
 
 Read the user's message and output ONLY valid JSON (no markdown fences) with this exact shape:
 {
@@ -43,23 +44,26 @@ Rules:
   - Otherwise app_action=null.
 - When app_action is non-null: set channels_to_lookup=[], include_recent_videos=false, video_sample_size=0, reply_direct=false (the app will handle the reply).
 - If the user greets, thanks you, asks what you do, or chats without a YouTube-related need: reply_direct=true, short friendly direct_message (under ~200 characters), app_action=null.
-- If the topic is unrelated to both YouTube creator data AND this bot's settings: reply_direct=true with a brief polite message, app_action=null.
-- When the user needs stats, comparisons, recent uploads, top videos, schedules, or channel info: reply_direct=false, app_action=null, fill channels_to_lookup with 1–3 search strings (names or @handles) that work in YouTube search.
-- include_recent_videos=true when recent uploads, video titles, top/most-viewed lists, posting patterns, or "latest" matters; false for subscriber-only or generic stat questions where listing videos is unnecessary.
+- If the topic is unrelated to both YouTube creator work AND this bot's settings: reply_direct=true with a brief polite message, app_action=null.
+- When the user needs stats, comparisons, uploads, schedules, channel info, OR wants to brainstorm/jam on growth, diversification, packaging, content ideas, or strategy for THEIR channel or ANY named channel: reply_direct=false, app_action=null, fill channels_to_lookup with the 1–3 channel names or @handles they mean (include their own channel if they name it). If they want ideas but name no channel, reply_direct=true and direct_message asks for their @handle or channel name to pull real data.
+- include_recent_videos=true when recent uploads, video titles, top/most-viewed lists, posting patterns, "latest", format experiments, or brainstorms about what to make next matter; false for subscriber-only questions where video lists add nothing.
 - video_sample_size: integer 5–15 when include_recent_videos is true, else use 0.
 - If you cannot tell which channel they mean: reply_direct=true and direct_message asks them to name the channel or @handle clearly, app_action=null.
 """
 
-_ANSWER_SYSTEM = """You are NicheScope. Answer in a crisp Telegram style using ONLY the YouTube API data below.
+_ANSWER_SYSTEM = """You are NicheScope. Answer in a crisp Telegram style. Ground every factual claim (subs, views, titles, cadence) in the YouTube API JSON below — never invent stats or video titles.
+
+The user may be on a competitor, their own channel, or any mix. They may want a quick jam: growth, diversification, formats, packaging, or content ideas.
 
 Length and shape (strict):
 - Aim for at most ~900 characters total (about 8–12 short lines). Do not ramble.
-- Open with the direct answer in 1–2 tight sentences. Only then, if needed: up to 3 bullets, one line each.
+- Open with the direct read on the data in 1–2 tight sentences. Then, if useful: up to 3 bullets, one line each.
 - Comparisons: one short paragraph or a few labeled lines — not an essay.
-- Strategy / "what to do next" angles: at most 3 bullets, each under 12 words, grounded only in the data shown.
-- No preamble ("Sure", "Here is", "I'd be happy"). No restating the user's question. No closing lecture.
+- Facts: only what the JSON supports.
+- Brainstorm / ideas: when they ask to ideate, jam, diversify, or "what should I try", add up to 3 extra lines starting with "Idea:" — short, concrete, clearly suggestions (not facts). Tie each idea to a pattern visible in the data when you can; if not, say it is a general experiment to test.
+- No preamble ("Sure", "Here is"). No restating the full question. No closing lecture.
 
-If a lookup failed or data is missing, say so in one short sentence. Do not invent statistics or video titles.
+If a lookup failed or data is missing, say so in one short sentence.
 
 Plain text only — no markdown, asterisks, or underscores."""
 
@@ -206,17 +210,19 @@ _YT_INTENT_WORDS = frozenset(
         "youtube", "yt", "channel", "channels", "video", "videos", "subscriber",
         "subscribers", "subs", "views", "view", "upload", "uploads", "compare",
         "vs", "watch", "digest", "creator", "creators", "shorts", "trend", "trends",
-        "niche", "stats", "sub", "vlog",
+        "niche", "stats", "sub", "vlog", "grow", "growth", "brainstorm", "idea",
+        "ideas", "diversify", "diversification", "jam", "ideate", "strategy",
+        "format", "formats", "audience",
     }
 )
 _CAPABILITIES_BLURB = (
-    "Ask about any channel by name or @handle — stats, recent videos, comparisons, "
-    "or niche ideas. For recurring competitor tracking: /watch, /digest, /watches. "
-    "Tap /start for command buttons."
+    "Ask about any channel (yours or anyone else's): stats, recent videos, comparisons, "
+    "niche gaps, growth, diversification, or a quick brainstorm — with live YouTube data. "
+    "Watchlist + scheduled pulse: /watch, /digest, /watches. Tap /start for buttons."
 )
 
 _WELCOME_REPLY = (
-    "Hi! I'm NicheScope — your YouTube intel assistant.\n\n"
+    "Hi! I'm NicheScope — your YouTube copilot for intel and ideas.\n\n"
     f"{_CAPABILITIES_BLURB}"
 )
 
@@ -469,7 +475,7 @@ async def _answer_turn(user_message: str, bundles: list[dict[str, Any]]) -> str 
             },
         ],
         max_tokens=700,
-        temperature=0.42,
+        temperature=0.48,
     )
 
 
@@ -541,8 +547,8 @@ async def classify_and_respond(
             ):
                 return _WELCOME_REPLY, _direct
         return (
-            "I could not interpret that request. Please ask about a YouTube channel "
-            "or video topic, and mention the channel name or @handle if you can.",
+            "I could not interpret that request. Try naming a channel or @handle and what you want "
+            "(stats, compare, growth brainstorm, diversification ideas, etc.).",
             _direct,
         )
 
@@ -565,16 +571,16 @@ async def classify_and_respond(
         if dm:
             return str(dm).strip(), _direct
         if not channels:
-            return (
-                "Hi! I can help with YouTube channels and videos — stats, recent uploads, "
-                "top videos, or comparisons. Tell me which channel or @handle you care about.",
-                _direct,
-            )
+        return (
+            "I can help with any channel — yours or someone else's: stats, uploads, comparisons, "
+            "growth ideas, or a quick jam. Name the @handle or channel and what you want.",
+            _direct,
+        )
 
     if not channels:
         return (
-            "Which YouTube channel or creator should I look up? "
-            "Name the channel or @handle and what you want to know.",
+            "Which channel should I use — yours or another? "
+            "Name the @handle or channel title and what you want (stats, compare, brainstorm, etc.).",
             _direct,
         )
 
