@@ -571,11 +571,11 @@ async def classify_and_respond(
         if dm:
             return str(dm).strip(), _direct
         if not channels:
-        return (
-            "I can help with any channel — yours or someone else's: stats, uploads, comparisons, "
-            "growth ideas, or a quick jam. Name the @handle or channel and what you want.",
-            _direct,
-        )
+            return (
+                "I can help with any channel — yours or someone else's: stats, uploads, comparisons, "
+                "growth ideas, or a quick jam. Name the @handle or channel and what you want.",
+                _direct,
+            )
 
     if not channels:
         return (
